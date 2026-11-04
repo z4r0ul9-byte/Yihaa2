@@ -1,11 +1,10 @@
 /**
- * Air Canvas — Hand Gesture Mode with Neon Glow
+ * Air Canvas — Hand Gesture Mode with Neon Glow & 3D Portal
  * 
  * Gesture logic:
+ * ✋✋ TWO OPEN PALMS: Triggers a 3D AR portal frame between the hands.
  * ✋ OPEN_PALM: Hold for 1s to toggle mode (IDLE -> DRAW -> ERASE -> IDLE).
  * ☝️ POINTING: Draws or Erases based on active mode. Smooth continuous stroke.
- * ✊ OTHER: Stops the current stroke.
- * Mode persists if hand leaves the frame.
  */
 
 // ===== DOM =====
@@ -194,13 +193,79 @@ function drawCursor(x, y) {
   overlayCtx.restore();
 }
 
+function drawPortal(h1, h2, w, h) {
+  // Extract Thumb (4) and Index (8) tips for both hands
+  const p1_t = { x: (1 - h1[4].x) * w, y: h1[4].y * h };
+  const p1_i = { x: (1 - h1[8].x) * w, y: h1[8].y * h };
+  const p2_t = { x: (1 - h2[4].x) * w, y: h2[4].y * h };
+  const p2_i = { x: (1 - h2[8].x) * w, y: h2[8].y * h };
+
+  overlayCtx.save();
+  
+  // 3D Extrusion offset
+  const dx = 35; 
+  const dy = 25;
+
+  const p1_t_b = { x: p1_t.x + dx, y: p1_t.y + dy };
+  const p1_i_b = { x: p1_i.x + dx, y: p1_i.y + dy };
+  const p2_t_b = { x: p2_t.x + dx, y: p2_t.y + dy };
+  const p2_i_b = { x: p2_i.x + dx, y: p2_i.y + dy };
+
+  // Neon Red Glow
+  overlayCtx.shadowColor = '#ff0000';
+  overlayCtx.shadowBlur = 25;
+  overlayCtx.lineWidth = 4;
+
+  // Fill front face with red portal effect
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(p1_i.x, p1_i.y);
+  overlayCtx.lineTo(p1_t.x, p1_t.y);
+  overlayCtx.lineTo(p2_t.x, p2_t.y);
+  overlayCtx.lineTo(p2_i.x, p2_i.y);
+  overlayCtx.closePath();
+  overlayCtx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+  overlayCtx.fill();
+
+  // Draw 3D depth connecting lines
+  overlayCtx.strokeStyle = '#ff0000';
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(p1_t.x, p1_t.y); overlayCtx.lineTo(p1_t_b.x, p1_t_b.y);
+  overlayCtx.moveTo(p2_t.x, p2_t.y); overlayCtx.lineTo(p2_t_b.x, p2_t_b.y);
+  overlayCtx.moveTo(p1_i.x, p1_i.y); overlayCtx.lineTo(p1_i_b.x, p1_i_b.y);
+  overlayCtx.moveTo(p2_i.x, p2_i.y); overlayCtx.lineTo(p2_i_b.x, p2_i_b.y);
+  overlayCtx.stroke();
+
+  // Draw back face
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(p1_i_b.x, p1_i_b.y);
+  overlayCtx.lineTo(p1_t_b.x, p1_t_b.y);
+  overlayCtx.lineTo(p2_t_b.x, p2_t_b.y);
+  overlayCtx.lineTo(p2_i_b.x, p2_i_b.y);
+  overlayCtx.closePath();
+  overlayCtx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+  overlayCtx.stroke();
+
+  // Draw front face border (white glow)
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(p1_i.x, p1_i.y);
+  overlayCtx.lineTo(p1_t.x, p1_t.y);
+  overlayCtx.lineTo(p2_t.x, p2_t.y);
+  overlayCtx.lineTo(p2_i.x, p2_i.y);
+  overlayCtx.closePath();
+  overlayCtx.strokeStyle = '#ffffff';
+  overlayCtx.lineWidth = 3;
+  overlayCtx.stroke();
+
+  overlayCtx.restore();
+}
+
 // ===== MediaPipe =====
 const hands = new Hands({
   locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
 });
 
 hands.setOptions({
-  maxNumHands: 1,
+  maxNumHands: 2, // UPDATED: Allow 2 hands for the 3D Portal
   modelComplexity: 1,
   minDetectionConfidence: 0.6,
   minTrackingConfidence: 0.6,
@@ -260,12 +325,44 @@ function onHandResults(results) {
     endActiveStroke();
     palmHoldStart = null;
     smoothedPoint = null;
-    // Mode is intentionally NOT reset here. It persists.
     statusEl.textContent = `Mode: ${appMode} (Saved) | No hand`;
     return;
   }
 
-  const lm = results.multiHandLandmarks[0];
+  // --- 2 HANDS LOGIC (3D PORTAL) ---
+  if (results.multiHandLandmarks.length === 2) {
+    const hand1 = results.multiHandLandmarks[0];
+    const hand2 = results.multiHandLandmarks[1];
+    const g1 = getGesture(hand1);
+    const g2 = getGesture(hand2);
+
+    if (g1 === 'OPEN_PALM' && g2 === 'OPEN_PALM') {
+      endActiveStroke();
+      palmHoldStart = null;
+      smoothedPoint = null;
+      
+      // Sort left/right so the box is drawn correctly
+      let leftHand = hand1, rightHand = hand2;
+      if (hand1[9].x > hand2[9].x) {
+         leftHand = hand2; rightHand = hand1;
+      }
+
+      drawPortal(leftHand, rightHand, w, h);
+      statusEl.textContent = "✋✋ 3D PORTAL ACTIVE";
+      return;
+    }
+  }
+
+  // --- 1 HAND LOGIC (DRAW/ERASE) ---
+  // If 2 hands detected but not a portal, prioritize the pointing hand
+  let primaryHand = results.multiHandLandmarks[0];
+  if (results.multiHandLandmarks.length === 2) {
+     if (getGesture(results.multiHandLandmarks[1]) === 'POINTING') {
+         primaryHand = results.multiHandLandmarks[1];
+     }
+  }
+
+  const lm = primaryHand;
   const gesture = getGesture(lm);
 
   // Landmark 9 = palm center, 8 = index tip
