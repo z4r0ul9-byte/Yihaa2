@@ -5,6 +5,7 @@
  * ✋ OPEN_PALM: Hold for 1s to toggle mode (IDLE -> DRAW -> ERASE -> IDLE).
  * ☝️ POINTING: Draws or Erases based on active mode. Smooth continuous stroke.
  * ✊ OTHER: Stops the current stroke.
+ * Mode persists if hand leaves the frame.
  */
 
 // ===== DOM =====
@@ -15,6 +16,7 @@ const statusEl = document.getElementById("status");
 const colorInput = document.getElementById("color");
 const sizeInput = document.getElementById("size");
 const clearBtn = document.getElementById("clear");
+const saveBtn = document.getElementById("save");
 const stage = document.getElementById("stage");
 const stageInner = document.getElementById("stageInner");
 
@@ -246,7 +248,8 @@ function onHandResults(results) {
     endActiveStroke();
     palmHoldStart = null;
     smoothedPoint = null;
-    statusEl.textContent = `Mode: ${appMode} | No hand`;
+    // Mode is intentionally NOT reset here. It persists.
+    statusEl.textContent = `Mode: ${appMode} (Saved) | No hand`;
     return;
   }
 
@@ -328,4 +331,13 @@ clearBtn.addEventListener("click", () => {
   redrawStrokes();
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
   statusEl.textContent = "Cleared";
+});
+
+saveBtn.addEventListener("click", () => {
+  // Save transparent PNG
+  const link = document.createElement("a");
+  link.download = `air-canvas-${Date.now()}.png`;
+  link.href = drawCanvas.toDataURL("image/png");
+  link.click();
+  statusEl.textContent = "Image saved!";
 });
