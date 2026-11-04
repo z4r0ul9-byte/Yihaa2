@@ -1,10 +1,5 @@
 /**
- * Air Canvas — Hand Gesture Mode with Neon Glow & 3D Portal
- * 
- * Gesture logic:
- * ✋✋ TWO OPEN PALMS: Triggers a 3D AR portal frame between the hands.
- * ✋ OPEN_PALM: Hold for 1s to toggle mode (IDLE -> DRAW -> ERASE -> IDLE).
- * ☝️ POINTING: Draws or Erases based on active mode. Smooth continuous stroke.
+ * Air Canvas — Neon Gesture Mode with Dynamic Web Portal
  */
 
 // ===== DOM =====
@@ -16,6 +11,7 @@ const colorInput = document.getElementById("color");
 const sizeInput = document.getElementById("size");
 const clearBtn = document.getElementById("clear");
 const saveBtn = document.getElementById("save");
+const portalBtn = document.getElementById("portalBtn");
 const stage = document.getElementById("stage");
 const stageInner = document.getElementById("stageInner");
 
@@ -34,6 +30,7 @@ const ERASER_SIZE_MULT = 4;
 let appMode = 'IDLE'; // 'IDLE' | 'DRAW' | 'ERASE'
 let palmHoldStart = null;
 let smoothedPoint = null;
+let isPortalActive = false;
 
 // Stroke tracking
 let strokes = [];
@@ -92,12 +89,12 @@ function drawSegment(from, to, stroke) {
   if (stroke.mode === 'erase') {
     drawCtx.globalCompositeOperation = 'destination-out';
     drawCtx.strokeStyle = 'rgba(0,0,0,1)';
-    drawCtx.shadowBlur = 0; // Eraser doesn't glow
+    drawCtx.shadowBlur = 0;
   } else {
     drawCtx.globalCompositeOperation = 'source-over';
     drawCtx.strokeStyle = stroke.color;
     drawCtx.shadowColor = stroke.color;
-    drawCtx.shadowBlur = Math.max(15, stroke.size * 3); // Neon glow effect
+    drawCtx.shadowBlur = Math.max(15, stroke.size * 3);
   }
   drawCtx.lineWidth = stroke.size;
   drawCtx.lineCap = 'round';
@@ -125,7 +122,7 @@ function redrawStrokes() {
       drawCtx.globalCompositeOperation = 'source-over';
       drawCtx.strokeStyle = stroke.color;
       drawCtx.shadowColor = stroke.color;
-      drawCtx.shadowBlur = Math.max(15, stroke.size * 3); // Neon glow effect
+      drawCtx.shadowBlur = Math.max(15, stroke.size * 3);
     }
     drawCtx.lineWidth = stroke.size;
     drawCtx.lineCap = 'round';
@@ -144,7 +141,6 @@ function redrawStrokes() {
 
 function drawProgressRing(x, y, progress, currentMode) {
   overlayCtx.save();
-
   overlayCtx.beginPath();
   overlayCtx.arc(x, y, RING_RADIUS, 0, Math.PI * 2);
   overlayCtx.strokeStyle = "rgba(255,255,255,0.18)";
@@ -152,18 +148,12 @@ function drawProgressRing(x, y, progress, currentMode) {
   overlayCtx.stroke();
 
   let nextColor = "#00ffff"; 
-  if (currentMode === 'DRAW') nextColor = "#ff0055"; // Next is ERASE
-  else if (currentMode === 'ERASE') nextColor = "#e5e5e5"; // Next is IDLE
+  if (currentMode === 'DRAW') nextColor = "#ff0055"; 
+  else if (currentMode === 'ERASE') nextColor = "#e5e5e5"; 
 
   if (progress > 0) {
     overlayCtx.beginPath();
-    overlayCtx.arc(
-      x,
-      y,
-      RING_RADIUS,
-      -Math.PI / 2,
-      -Math.PI / 2 + Math.PI * 2 * progress
-    );
+    overlayCtx.arc(x, y, RING_RADIUS, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
     overlayCtx.strokeStyle = nextColor;
     overlayCtx.lineWidth = RING_LINE_WIDTH;
     overlayCtx.lineCap = "round";
@@ -178,7 +168,6 @@ function drawProgressRing(x, y, progress, currentMode) {
   overlayCtx.shadowColor = nextColor;
   overlayCtx.shadowBlur = 10;
   overlayCtx.fill();
-
   overlayCtx.restore();
 }
 
@@ -193,68 +182,104 @@ function drawCursor(x, y) {
   overlayCtx.restore();
 }
 
-function drawPortal(h1, h2, w, h) {
-  // Extract Thumb (4) and Index (8) tips for both hands
-  const p1_t = { x: (1 - h1[4].x) * w, y: h1[4].y * h };
-  const p1_i = { x: (1 - h1[8].x) * w, y: h1[8].y * h };
-  const p2_t = { x: (1 - h2[4].x) * w, y: h2[4].y * h };
-  const p2_i = { x: (1 - h2[8].x) * w, y: h2[8].y * h };
+// Dynamic Web Portal following the hand
+function drawWebPortal(lm, w, h) {
+  const cx = (1 - lm[9].x) * w;
+  const cy = lm[9].y * h;
+  
+  // Fingertips: Thumb, Index, Middle, Ring, Pinky
+  const fingers = [4, 8, 12, 16, 20].map(idx => ({
+    x: (1 - lm[idx].x) * w,
+    y: lm[idx].y * h
+  }));
+
+  // 3D Depth offset (moving "into" the screen)
+  const dx = 25;
+  const dy = -25;
 
   overlayCtx.save();
-  
-  // 3D Extrusion offset
-  const dx = 35; 
-  const dy = 25;
 
-  const p1_t_b = { x: p1_t.x + dx, y: p1_t.y + dy };
-  const p1_i_b = { x: p1_i.x + dx, y: p1_i.y + dy };
-  const p2_t_b = { x: p2_t.x + dx, y: p2_t.y + dy };
-  const p2_i_b = { x: p2_i.x + dx, y: p2_i.y + dy };
+  // --- Draw Back Web (Darker / smaller) ---
+  overlayCtx.strokeStyle = 'rgba(255, 0, 85, 0.3)';
+  overlayCtx.shadowColor = '#ff0055';
+  overlayCtx.shadowBlur = 10;
+  overlayCtx.lineWidth = 1.5;
 
-  // Neon Red Glow
-  overlayCtx.shadowColor = '#ff0000';
-  overlayCtx.shadowBlur = 25;
-  overlayCtx.lineWidth = 4;
+  // Back rays
+  fingers.forEach(f => {
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(cx + dx, cy + dy);
+    overlayCtx.lineTo(f.x + dx, f.y + dy);
+    overlayCtx.stroke();
+  });
 
-  // Fill front face with red portal effect
+  // Back rings
+  for (let r = 1; r <= 4; r++) {
+    const ratio = r / 4;
+    overlayCtx.beginPath();
+    fingers.forEach((f, i) => {
+      const fx = cx + dx + (f.x - cx) * ratio;
+      const fy = cy + dy + (f.y - cy) * ratio;
+      if (i === 0) overlayCtx.moveTo(fx, fy);
+      else overlayCtx.lineTo(fx, fy);
+    });
+    overlayCtx.closePath();
+    overlayCtx.stroke();
+  }
+
+  // --- Draw Depth Connecting Lines ---
+  overlayCtx.strokeStyle = 'rgba(255, 0, 85, 0.5)';
+  overlayCtx.lineWidth = 1;
+  fingers.forEach(f => {
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(f.x, f.y);
+    overlayCtx.lineTo(f.x + dx, f.y + dy);
+    overlayCtx.stroke();
+  });
+
+  // --- Draw Front Web (Bright / neon) ---
+  overlayCtx.strokeStyle = '#ff0055';
+  overlayCtx.shadowBlur = 20;
+  overlayCtx.lineWidth = 2.5;
+
+  // Front rays
+  fingers.forEach(f => {
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(cx, cy);
+    overlayCtx.lineTo(f.x, f.y);
+    overlayCtx.stroke();
+  });
+
+  // Front rings
+  for (let r = 1; r <= 4; r++) {
+    const ratio = r / 4;
+    overlayCtx.beginPath();
+    fingers.forEach((f, i) => {
+      const fx = cx + (f.x - cx) * ratio;
+      const fy = cy + (f.y - cy) * ratio;
+      if (i === 0) overlayCtx.moveTo(fx, fy);
+      else overlayCtx.lineTo(fx, fy);
+    });
+    overlayCtx.closePath();
+    overlayCtx.stroke();
+  }
+
+  // --- Center HUD (Floating info) ---
+  overlayCtx.shadowBlur = 15;
+  overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.75)';
   overlayCtx.beginPath();
-  overlayCtx.moveTo(p1_i.x, p1_i.y);
-  overlayCtx.lineTo(p1_t.x, p1_t.y);
-  overlayCtx.lineTo(p2_t.x, p2_t.y);
-  overlayCtx.lineTo(p2_i.x, p2_i.y);
-  overlayCtx.closePath();
-  overlayCtx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+  overlayCtx.arc(cx, cy, 28, 0, Math.PI * 2);
   overlayCtx.fill();
-
-  // Draw 3D depth connecting lines
-  overlayCtx.strokeStyle = '#ff0000';
-  overlayCtx.beginPath();
-  overlayCtx.moveTo(p1_t.x, p1_t.y); overlayCtx.lineTo(p1_t_b.x, p1_t_b.y);
-  overlayCtx.moveTo(p2_t.x, p2_t.y); overlayCtx.lineTo(p2_t_b.x, p2_t_b.y);
-  overlayCtx.moveTo(p1_i.x, p1_i.y); overlayCtx.lineTo(p1_i_b.x, p1_i_b.y);
-  overlayCtx.moveTo(p2_i.x, p2_i.y); overlayCtx.lineTo(p2_i_b.x, p2_i_b.y);
+  
+  overlayCtx.strokeStyle = '#00ffff';
+  overlayCtx.lineWidth = 2;
   overlayCtx.stroke();
 
-  // Draw back face
-  overlayCtx.beginPath();
-  overlayCtx.moveTo(p1_i_b.x, p1_i_b.y);
-  overlayCtx.lineTo(p1_t_b.x, p1_t_b.y);
-  overlayCtx.lineTo(p2_t_b.x, p2_t_b.y);
-  overlayCtx.lineTo(p2_i_b.x, p2_i_b.y);
-  overlayCtx.closePath();
-  overlayCtx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
-  overlayCtx.stroke();
-
-  // Draw front face border (white glow)
-  overlayCtx.beginPath();
-  overlayCtx.moveTo(p1_i.x, p1_i.y);
-  overlayCtx.lineTo(p1_t.x, p1_t.y);
-  overlayCtx.lineTo(p2_t.x, p2_t.y);
-  overlayCtx.lineTo(p2_i.x, p2_i.y);
-  overlayCtx.closePath();
-  overlayCtx.strokeStyle = '#ffffff';
-  overlayCtx.lineWidth = 3;
-  overlayCtx.stroke();
+  overlayCtx.fillStyle = '#00ffff';
+  overlayCtx.font = 'bold 11px monospace';
+  overlayCtx.textAlign = 'center';
+  overlayCtx.shadowColor = '#00ffff';
+  overlayCtx.fillText(appMode, cx, cy + 4);
 
   overlayCtx.restore();
 }
@@ -265,7 +290,7 @@ const hands = new Hands({
 });
 
 hands.setOptions({
-  maxNumHands: 2, // UPDATED: Allow 2 hands for the 3D Portal
+  maxNumHands: 1, 
   modelComplexity: 1,
   minDetectionConfidence: 0.6,
   minTrackingConfidence: 0.6,
@@ -329,43 +354,14 @@ function onHandResults(results) {
     return;
   }
 
-  // --- 2 HANDS LOGIC (3D PORTAL) ---
-  if (results.multiHandLandmarks.length === 2) {
-    const hand1 = results.multiHandLandmarks[0];
-    const hand2 = results.multiHandLandmarks[1];
-    const g1 = getGesture(hand1);
-    const g2 = getGesture(hand2);
-
-    if (g1 === 'OPEN_PALM' && g2 === 'OPEN_PALM') {
-      endActiveStroke();
-      palmHoldStart = null;
-      smoothedPoint = null;
-      
-      // Sort left/right so the box is drawn correctly
-      let leftHand = hand1, rightHand = hand2;
-      if (hand1[9].x > hand2[9].x) {
-         leftHand = hand2; rightHand = hand1;
-      }
-
-      drawPortal(leftHand, rightHand, w, h);
-      statusEl.textContent = "✋✋ 3D PORTAL ACTIVE";
-      return;
-    }
-  }
-
-  // --- 1 HAND LOGIC (DRAW/ERASE) ---
-  // If 2 hands detected but not a portal, prioritize the pointing hand
-  let primaryHand = results.multiHandLandmarks[0];
-  if (results.multiHandLandmarks.length === 2) {
-     if (getGesture(results.multiHandLandmarks[1]) === 'POINTING') {
-         primaryHand = results.multiHandLandmarks[1];
-     }
-  }
-
-  const lm = primaryHand;
+  const lm = results.multiHandLandmarks[0];
   const gesture = getGesture(lm);
 
-  // Landmark 9 = palm center, 8 = index tip
+  // Draw Portal Web if active
+  if (isPortalActive) {
+    drawWebPortal(lm, w, h);
+  }
+
   const palmX = (1 - lm[9].x) * w;
   const palmY = lm[9].y * h;
   const indexX = (1 - lm[8].x) * w;
@@ -379,7 +375,7 @@ function onHandResults(results) {
   }
 
   if (gesture === 'OPEN_PALM') {
-    endActiveStroke(); // stop drawing while holding to switch
+    endActiveStroke();
     
     if (palmHoldStart === null) palmHoldStart = now;
     const elapsed = now - palmHoldStart;
@@ -393,11 +389,10 @@ function onHandResults(results) {
       if (appMode === 'IDLE') appMode = 'DRAW';
       else if (appMode === 'DRAW') appMode = 'ERASE';
       else appMode = 'IDLE';
-      
-      palmHoldStart = null; // reset so user must release to hold again
+      palmHoldStart = null;
     }
   } else {
-    palmHoldStart = null; // cancel hold if gesture changes
+    palmHoldStart = null;
     
     if (gesture === 'POINTING') {
       if (appMode === 'DRAW') {
@@ -409,7 +404,7 @@ function onHandResults(results) {
         }
         currentStroke.points.push({ x: smoothedPoint.x, y: smoothedPoint.y });
         prevPoint = { x: smoothedPoint.x, y: smoothedPoint.y };
-        statusEl.textContent = `✏️ DRAW MODE (Neon)`;
+        statusEl.textContent = `✏️ DRAW MODE`;
       } else if (appMode === 'ERASE') {
         if (prevPoint) {
           drawSegment(prevPoint, smoothedPoint, currentStroke);
@@ -426,7 +421,6 @@ function onHandResults(results) {
         statusEl.textContent = `IDLE (Show ✋ to change mode)`;
       }
     } else {
-      // OTHER gesture (e.g. fist)
       endActiveStroke();
       statusEl.textContent = `Mode: ${appMode}`;
     }
@@ -434,6 +428,13 @@ function onHandResults(results) {
 }
 
 // ===== UI =====
+portalBtn.addEventListener("click", () => {
+  isPortalActive = !isPortalActive;
+  portalBtn.style.background = isPortalActive ? "#ff0055" : "#1a1a1a";
+  portalBtn.style.borderColor = isPortalActive ? "#ff0055" : "#333";
+  portalBtn.style.color = isPortalActive ? "#fff" : "#e5e5e5";
+});
+
 clearBtn.addEventListener("click", () => {
   strokes = [];
   endActiveStroke();
@@ -443,7 +444,6 @@ clearBtn.addEventListener("click", () => {
 });
 
 saveBtn.addEventListener("click", () => {
-  // Save transparent PNG
   const link = document.createElement("a");
   link.download = `neon-air-canvas-${Date.now()}.png`;
   link.href = drawCanvas.toDataURL("image/png");
