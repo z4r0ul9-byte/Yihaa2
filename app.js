@@ -1,5 +1,5 @@
 /**
- * Air Canvas — Dimensional Portal & 2-Hand Web
+ * Air Canvas — Dimensional Portal & 2-Hand Web (Polygon Clip)
  */
 
 // ===== DOM =====
@@ -37,7 +37,7 @@ let appMode = 'IDLE'; // 'IDLE' | 'DRAW' | 'ERASE'
 let palmHoldStart = null;
 let smoothedPoint = null;
 let isPortalActive = false;
-let isGestureActive = true; // Toggle for ✋ mode switching
+let isGestureActive = true;
 
 // Stroke tracking
 let strokes = [];
@@ -195,111 +195,166 @@ function drawCursor(x, y) {
 // ===== Dimensional Portal & Web Logic =====
 function drawDimensionalPortal(results, w, h) {
   const numHands = results.multiHandLandmarks.length;
-  
-  // Render camera feed with a filter (e.g., Invert + Hue shift for dimension look)
+  if (numHands === 0) return;
+
+  // Render filtered camera (Inverted + Hue Shifted for dimension look)
   filterCtx.clearRect(0, 0, w, h);
-  filterCtx.filter = 'invert(1) hue-rotate(180deg) contrast(1.5)';
+  filterCtx.filter = 'invert(1) hue-rotate(180deg) contrast(1.5)'; 
   filterCtx.drawImage(video, 0, 0, w, h);
   filterCtx.filter = 'none';
 
-  overlayCtx.save();
+  const getPt = (lm, idx) => ({ x: (1 - lm[idx].x) * w, y: lm[idx].y * h });
   
-  // Create clipping path based on hands
+  overlayCtx.save();
   overlayCtx.beginPath();
   
+  // Build Polygon Shape based on hand fingertips (NOT a box)
   if (numHands === 2) {
-    // Bounding box between both hands for the portal window
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    results.multiHandLandmarks.forEach(lm => {
-      lm.forEach(p => {
-        const px = (1 - p.x) * w;
-        const py = p.y * h;
-        if (px < minX) minX = px;
-        if (px > maxX) maxX = px;
-        if (py < minY) minY = py;
-        if (py > maxY) maxY = py;
-      });
-    });
+    let left = results.multiHandLandmarks[0], right = results.multiHandLandmarks[1];
+    if (left[9].x > right[9].x) { left = right; right = results.multiHandLandmarks[0]; }
     
-    // Draw a jagged/tech rectangle
-    overlayCtx.rect(minX, minY, maxX - minX, maxY - minY);
-  } else if (numHands === 1) {
-    // Bounding box around 1 hand
+    const l_wrist = getPt(left, 0);
+    const l_pinky = getPt(left, 20);
+    const l_ring = getPt(left, 16);
+    const l_mid = getPt(left, 12);
+    const l_idx = getPt(left, 8);
+    const l_thumb = getPt(left, 4);
+    
+    const r_thumb = getPt(right, 4);
+    const r_idx = getPt(right, 8);
+    const r_mid = getPt(right, 12);
+    const r_ring = getPt(right, 16);
+    const r_pinky = getPt(right, 20);
+    const r_wrist = getPt(right, 0);
+    
+    // Path bridging both hands
+    overlayCtx.moveTo(l_wrist.x, l_wrist.y);
+    overlayCtx.lineTo(l_pinky.x, l_pinky.y);
+    overlayCtx.lineTo(l_ring.x, l_ring.y);
+    overlayCtx.lineTo(l_mid.x, l_mid.y);
+    overlayCtx.lineTo(l_idx.x, l_idx.y);
+    overlayCtx.lineTo(l_thumb.x, l_thumb.y);
+    overlayCtx.lineTo(r_thumb.x, r_thumb.y);
+    overlayCtx.lineTo(r_idx.x, r_idx.y);
+    overlayCtx.lineTo(r_mid.x, r_mid.y);
+    overlayCtx.lineTo(r_ring.x, r_ring.y);
+    overlayCtx.lineTo(r_pinky.x, r_pinky.y);
+    overlayCtx.lineTo(r_wrist.x, r_wrist.y);
+    overlayCtx.closePath();
+  } else {
     const lm = results.multiHandLandmarks[0];
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    lm.forEach(p => {
-      const px = (1 - p.x) * w;
-      const py = p.y * h;
-      if (px < minX) minX = px;
-      if (px > maxX) maxX = px;
-      if (py < minY) minY = py;
-      if (py > maxY) maxY = py;
-    });
-    overlayCtx.rect(minX, minY, maxX - minX, maxY - minY);
+    const wrist = getPt(lm, 0);
+    const thumb = getPt(lm, 4);
+    const index = getPt(lm, 8);
+    const middle = getPt(lm, 12);
+    const ring = getPt(lm, 16);
+    const pinky = getPt(lm, 20);
+    
+    overlayCtx.moveTo(wrist.x, wrist.y);
+    overlayCtx.lineTo(pinky.x, pinky.y);
+    overlayCtx.lineTo(ring.x, ring.y);
+    overlayCtx.lineTo(middle.x, middle.y);
+    overlayCtx.lineTo(index.x, index.y);
+    overlayCtx.lineTo(thumb.x, thumb.y);
+    overlayCtx.closePath();
   }
   
-  if (numHands > 0) {
-    overlayCtx.clip(); // Apply portal window
+  // Clip and draw filtered dimension
+  overlayCtx.save();
+  overlayCtx.clip();
+  overlayCtx.drawImage(filterCanvas, 0, 0);
+  
+  // Add tech grid inside the portal
+  overlayCtx.strokeStyle = 'rgba(0, 255, 255, 0.2)';
+  overlayCtx.lineWidth = 1;
+  overlayCtx.beginPath();
+  for (let i = 0; i < w; i += 40) { overlayCtx.moveTo(i, 0); overlayCtx.lineTo(i, h); }
+  for (let i = 0; i < h; i += 40) { overlayCtx.moveTo(0, i); overlayCtx.lineTo(w, i); }
+  overlayCtx.stroke();
+  
+  overlayCtx.restore(); // remove clip for the border and web
+
+  // Glowing Border
+  overlayCtx.strokeStyle = '#00ffff';
+  overlayCtx.shadowColor = '#00ffff';
+  overlayCtx.shadowBlur = 20;
+  overlayCtx.lineWidth = 4;
+  overlayCtx.stroke();
+
+  // The Web (Jaring)
+  overlayCtx.strokeStyle = '#ff0055';
+  overlayCtx.shadowColor = '#ff0055';
+  overlayCtx.shadowBlur = 10;
+  overlayCtx.lineWidth = 1.5;
+
+  if (numHands === 2) {
+    let left = results.multiHandLandmarks[0], right = results.multiHandLandmarks[1];
+    if (left[9].x > right[9].x) { left = right; right = results.multiHandLandmarks[0]; }
     
-    // Draw the filtered dimension
-    overlayCtx.drawImage(filterCanvas, 0, 0);
+    const l_f = [4, 8, 12, 16, 20].map(i => getPt(left, i));
+    const r_f = [4, 8, 12, 16, 20].map(i => getPt(right, i));
     
-    // Add a glowing tech border around the clip
-    overlayCtx.restore(); // Restore to draw border
-    overlayCtx.save();
+    // Cross web lines
+    for (let i = 0; i < 5; i++) {
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(l_f[i].x, l_f[i].y);
+      overlayCtx.lineTo(r_f[i].x, r_f[i].y);
+      overlayCtx.stroke();
+    }
     
-    overlayCtx.strokeStyle = '#00ffff';
-    overlayCtx.shadowColor = '#00ffff';
-    overlayCtx.shadowBlur = 20;
-    overlayCtx.lineWidth = 3;
-    overlayCtx.stroke(); // Strokes the path we just defined
-
-    // --- Draw the Web (Jaring) ---
-    overlayCtx.strokeStyle = 'rgba(255, 0, 85, 0.6)';
-    overlayCtx.shadowColor = '#ff0055';
-    overlayCtx.shadowBlur = 10;
-    overlayCtx.lineWidth = 1.5;
-
-    const getPt = (handIdx, lmIdx) => {
-      const p = results.multiHandLandmarks[handIdx][lmIdx];
-      return { x: (1 - p.x) * w, y: p.y * h };
-    };
-
-    const fingers = [4, 8, 12, 16, 20];
-
-    if (numHands === 2) {
-      // Connect fingertips of hand 1 to hand 2
-      fingers.forEach(f => {
-        const p1 = getPt(0, f);
-        const p2 = getPt(1, f);
-        
-        overlayCtx.beginPath();
-        overlayCtx.moveTo(p1.x, p1.y);
-        overlayCtx.lineTo(p2.x, p2.y);
-        overlayCtx.stroke();
-        
-        // Add some zig-zag/web lines
-        const midX = (p1.x + p2.x) / 2 + (Math.random() * 20 - 10);
-        const midY = (p1.y + p2.y) / 2 + (Math.random() * 20 - 10);
-        overlayCtx.beginPath();
-        overlayCtx.moveTo(p1.x, p1.y);
-        overlayCtx.lineTo(midX, midY);
-        overlayCtx.lineTo(p2.x, p2.y);
-        overlayCtx.stroke();
+    // Diagonals
+    for (let i = 0; i < 4; i++) {
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(l_f[i].x, l_f[i].y);
+      overlayCtx.lineTo(r_f[i+1].x, r_f[i+1].y);
+      overlayCtx.stroke();
+      
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(r_f[i].x, r_f[i].y);
+      overlayCtx.lineTo(l_f[i+1].x, l_f[i+1].y);
+      overlayCtx.stroke();
+    }
+    
+    // Concentric rings
+    for (let step = 1; step <= 4; step++) {
+      const ratio = step / 5;
+      overlayCtx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const px = l_f[i].x + (r_f[i].x - l_f[i].x) * ratio;
+        const py = l_f[i].y + (r_f[i].y - l_f[i].y) * ratio;
+        if (i === 0) overlayCtx.moveTo(px, py);
+        else overlayCtx.lineTo(px, py);
+      }
+      overlayCtx.stroke();
+    }
+  } else {
+    const lm = results.multiHandLandmarks[0];
+    const center = getPt(lm, 9);
+    const f = [4, 8, 12, 16, 20].map(i => getPt(lm, i));
+    
+    // Radial lines
+    f.forEach(pt => {
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(center.x, center.y);
+      overlayCtx.lineTo(pt.x, pt.y);
+      overlayCtx.stroke();
+    });
+    
+    // Rings
+    for (let step = 1; step <= 4; step++) {
+      const ratio = step / 4;
+      overlayCtx.beginPath();
+      f.forEach((pt, i) => {
+        const px = center.x + (pt.x - center.x) * ratio;
+        const py = center.y + (pt.y - center.y) * ratio;
+        if (i === 0) overlayCtx.moveTo(px, py);
+        else overlayCtx.lineTo(px, py);
       });
-    } else {
-      // 1 hand web (from palm center)
-      const center = getPt(0, 9);
-      fingers.forEach(f => {
-        const pt = getPt(0, f);
-        overlayCtx.beginPath();
-        overlayCtx.moveTo(center.x, center.y);
-        overlayCtx.lineTo(pt.x, pt.y);
-        overlayCtx.stroke();
-      });
+      overlayCtx.closePath();
+      overlayCtx.stroke();
     }
   }
-  
+
   overlayCtx.restore();
 }
 
@@ -309,7 +364,7 @@ const hands = new Hands({
 });
 
 hands.setOptions({
-  maxNumHands: 2, // Support 2 hands for pulling the web
+  maxNumHands: 2,
   modelComplexity: 1,
   minDetectionConfidence: 0.6,
   minTrackingConfidence: 0.6,
@@ -362,7 +417,6 @@ function onHandResults(results) {
   const h = drawCanvas.height / (window.devicePixelRatio || 1);
   if (!w || !h) return;
 
-  // Clear overlay for this frame
   overlayCtx.clearRect(0, 0, w, h);
 
   if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
@@ -376,14 +430,13 @@ function onHandResults(results) {
   // --- DRAW DIMENSIONAL PORTAL ---
   if (isPortalActive) {
     drawDimensionalPortal(results, w, h);
-    statusEl.textContent = "🚪 PORTAL ACTIVE (Tarikan 2 Tangan)";
-    return; // Skip drawing/gesture logic when portal is active to prevent chaos
+    statusEl.textContent = "🚪 PORTAL ACTIVE (Tarik 2 Tangan)";
+    return; // Skip drawing mode logic to prevent chaos
   }
 
   // --- SINGLE HAND LOGIC (DRAW/ERASE) ---
   let primaryHand = results.multiHandLandmarks[0];
   if (results.multiHandLandmarks.length === 2) {
-     // Prioritize pointing hand for drawing
      if (getGesture(results.multiHandLandmarks[1]) === 'POINTING') {
          primaryHand = results.multiHandLandmarks[1];
      }
@@ -466,7 +519,6 @@ portalBtn.addEventListener("click", () => {
   portalBtn.style.borderColor = isPortalActive ? "#ff0055" : "#333";
   portalBtn.style.color = isPortalActive ? "#fff" : "#e5e5e5";
   
-  // Auto pause drawing mode when portal is active
   if (isPortalActive) endActiveStroke();
 });
 
