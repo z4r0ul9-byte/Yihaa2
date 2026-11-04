@@ -1,19 +1,24 @@
 /**
- * Air Canvas — pinch-hold to draw.
+ * Air Canvas — pinch-hold to draw / keep-holding-still to erase.
  *
- * Hand tracking via MediaPipe Hands. Drawing on one canvas,
- * progress ring on a second overlay canvas.
+ * Gesture state machine:
+ *   IDLE
+ *     │ pinch
+ *     ▼
+ *   CHARGING_DRAW   [0..700ms] — blue ring fills
+ *     │ ring full
+ *     ▼
+ *   DRAWING         [700ms..] — stroke records, draw active
+ *     │ still pinched & not moved > 25px from origin
+ *     ▼
+ *   CHARGING_ERASER [700..1500ms] — small red ring fills
+ *     │ ring full
+ *     ▼
+ *   ERASING         [1500ms..] — eraser stroke records
  *
- * Gesture:
- *   - Pinch ratio (thumb-index / palm-size) < 0.30 → "pressing"
- *   - Pinch ratio > 0.45 → "released"
- *   - (between = hysteresis: keep previous state)
- *
- * Flow:
- *   - Pinch & hold for 700ms → ring fills → draw mode on
- *   - Release → stroke ends, grace window starts (1.5s)
- *   - Re-pinch within grace → instant draw mode
- *   - Re-pinch after grace → must hold 700ms again
+ * Release anywhere → commit current stroke, start grace window.
+ * Re-pinch within 1.5s → instant resume in last committed mode.
+ * Movement during CHARGING_ERASER cancels the eraser for this pinch.
  */
 
 // ===== DOM =====
@@ -31,24 +36,42 @@ const drawCtx = drawCanvas.getContext("2d");
 const overlayCtx = overlayCanvas.getContext("2d");
 
 // ===== Constants =====
-const HOLD_DURATION_MS = 700;
+const HOLD_DURATION_MS = 700;      // draw charge time
+const ERASER_CHARGE_MS = 800;      // additional time to reach eraser (total 1.5s)
 const GRACE_PERIOD_MS = 1500;
 const PINCH_ON = 0.30;
 const PINCH_OFF = 0.45;
 const SMOOTHING = 0.35;
 const RING_RADIUS = 40;
+const ERASER_RING_RADIUS = 24;
 const RING_LINE_WIDTH = 4;
+const ERASER_CANCEL_DISTANCE = 25; // px movement from pinch origin that cancels eraser charge
+const ERASER_MIN_SIZE = 20;
+const ERASER_SIZE_MULT = 4;
 
 // ===== State =====
-let pinchHoldStart = null;
-let lastStrokeEndTime = null;
 let isPinching = false;
-let drawMode = false;
-let strokeActive = false;
-let prevPoint = null;
 let smoothed = null;
-let strokes = [];
+
+// pinch-state (reset only when pinch ends)
+let pinchHoldStart = null;
+let drawUnlockTime = null;
+let pinchOriginPos = null;
+let eraserCancelled = false;
+
+// stroke-state
+let drawMode = false;
+let eraserMode = false;
+let strokeActive = false;
 let currentStroke = null;
+let prevPoint = null;
+
+// history
+let strokes = [];
+let lastStrokeEndTime = null;
+let lastCommittedMode = "draw";
+
+// layout
 let cachedVideoAspect = null;
 
 // ===== Layout sync =====
@@ -96,18 +119,18 @@ window.addEventListener("resize", () => {
   syncStageInner();
 });
 
-// ===== Stroke storage / rendering =====
+// ===== Stroke rendering =====
 function redrawStrokes() {
   const w = drawCanvas.width / (window.devicePixelRatio || 1);
   const h = drawCanvas.height / (window.devicePixelRatio || 1);
+  drawCtx.save();
+  drawCtx.globalCompositeOperation = "source-over";
   drawCtx.clearRect(0, 0, w, h);
+  drawCtx.restore();
 
   for (const stroke of strokes) {
-    if (stroke.points.length < 1) continue;
-    drawCtx.strokeStyle = stroke.color;
-    drawCtx.lineWidth = stroke.size;
-    drawCtx.lineCap = "round";
-    drawCtx.lineJoin = "round";
+    if (!stroke.points || stroke.points.length < 1) continue;
+    applyStrokeStyle(stroke);
     drawCtx.beginPath();
     const p0 = stroke.points[0];
     drawCtx.moveTo(p0.x, p0.y);
@@ -116,22 +139,34 @@ function redrawStrokes() {
       drawCtx.lineTo(p.x, p.y);
     }
     if (stroke.points.length === 1) {
-      // dot
       drawCtx.lineTo(p0.x + 0.01, p0.y + 0.01);
     }
     drawCtx.stroke();
+    drawCtx.restore();
   }
 }
 
-function drawSegment(from, to, color, size) {
-  drawCtx.strokeStyle = color;
-  drawCtx.lineWidth = size;
+function applyStrokeStyle(stroke) {
+  drawCtx.save();
+  if (stroke.mode === "erase") {
+    drawCtx.globalCompositeOperation = "destination-out";
+    drawCtx.strokeStyle = "rgba(0,0,0,1)";
+  } else {
+    drawCtx.globalCompositeOperation = "source-over";
+    drawCtx.strokeStyle = stroke.color;
+  }
+  drawCtx.lineWidth = stroke.size;
   drawCtx.lineCap = "round";
   drawCtx.lineJoin = "round";
+}
+
+function drawSegment(from, to, stroke) {
+  applyStrokeStyle(stroke);
   drawCtx.beginPath();
   drawCtx.moveTo(from.x, from.y);
   drawCtx.lineTo(to.x, to.y);
   drawCtx.stroke();
+  drawCtx.restore();
 }
 
 // ===== Overlay =====
@@ -144,14 +179,12 @@ function clearOverlay() {
 function drawProgressRing(x, y, progress) {
   overlayCtx.save();
 
-  // faint outer ring
   overlayCtx.beginPath();
   overlayCtx.arc(x, y, RING_RADIUS, 0, Math.PI * 2);
   overlayCtx.strokeStyle = "rgba(255,255,255,0.18)";
   overlayCtx.lineWidth = RING_LINE_WIDTH;
   overlayCtx.stroke();
 
-  // progress arc
   if (progress > 0) {
     overlayCtx.beginPath();
     overlayCtx.arc(
@@ -167,10 +200,41 @@ function drawProgressRing(x, y, progress) {
     overlayCtx.stroke();
   }
 
-  // center dot
   overlayCtx.beginPath();
   overlayCtx.arc(x, y, 3, 0, Math.PI * 2);
   overlayCtx.fillStyle = "#4d6bfe";
+  overlayCtx.fill();
+
+  overlayCtx.restore();
+}
+
+function drawEraserRing(x, y, progress) {
+  overlayCtx.save();
+
+  overlayCtx.beginPath();
+  overlayCtx.arc(x, y, ERASER_RING_RADIUS, 0, Math.PI * 2);
+  overlayCtx.strokeStyle = "rgba(255,80,80,0.20)";
+  overlayCtx.lineWidth = 3;
+  overlayCtx.stroke();
+
+  if (progress > 0) {
+    overlayCtx.beginPath();
+    overlayCtx.arc(
+      x,
+      y,
+      ERASER_RING_RADIUS,
+      -Math.PI / 2,
+      -Math.PI / 2 + Math.PI * 2 * progress
+    );
+    overlayCtx.strokeStyle = "#ff5050";
+    overlayCtx.lineWidth = 3;
+    overlayCtx.lineCap = "round";
+    overlayCtx.stroke();
+  }
+
+  overlayCtx.beginPath();
+  overlayCtx.arc(x, y, 2.5, 0, Math.PI * 2);
+  overlayCtx.fillStyle = "#ff5050";
   overlayCtx.fill();
 
   overlayCtx.restore();
@@ -196,7 +260,7 @@ const camera = new Camera(video, {
     try {
       await hands.send({ image: video });
     } catch (e) {
-      // ignore transient errors
+      /* ignore */
     }
   },
   width: 1280,
@@ -214,26 +278,30 @@ camera
 
 // ===== Main handler =====
 function onHandResults(results) {
-  // keep layout in sync with video aspect
-  if (video.videoWidth) {
-    syncStageInner();
-  }
+  if (video.videoWidth) syncStageInner();
 
   const now = performance.now();
   const w = drawCanvas.width / (window.devicePixelRatio || 1);
   const h = drawCanvas.height / (window.devicePixelRatio || 1);
   if (!w || !h) return;
 
+  // ---- no hand: commit any active stroke, reset pinch state ----
   if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
     if (strokeActive) endStroke(now);
-    pinchHoldStart = null;
     isPinching = false;
     smoothed = null;
+    pinchHoldStart = null;
+    drawUnlockTime = null;
+    pinchOriginPos = null;
+    eraserCancelled = false;
+    drawMode = false;
+    eraserMode = false;
     clearOverlay();
     statusEl.textContent = "No hand detected";
     return;
   }
 
+  // ---- compute pinch ratio + screen point ----
   const lm = results.multiHandLandmarks[0];
   const thumb = lm[4];
   const index = lm[8];
@@ -241,88 +309,167 @@ function onHandResults(results) {
   const middleMcp = lm[9];
 
   const pinchDist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
-  const palmSize = Math.hypot(wrist.x - middleMcp.x, wrist.y - middleMcp.y) || 0.0001;
+  const palmSize =
+    Math.hypot(wrist.x - middleMcp.x, wrist.y - middleMcp.y) || 0.0001;
   const pinchRatio = pinchDist / palmSize;
 
-  // hysteresis
   if (!isPinching && pinchRatio < PINCH_ON) isPinching = true;
   else if (isPinching && pinchRatio > PINCH_OFF) isPinching = false;
 
-  // screen coords (mirrored)
   const rawX = (1 - (thumb.x + index.x) / 2) * w;
   const rawY = ((thumb.y + index.y) / 2) * h;
 
-  // smoothing
-  if (smoothed === null) {
-    smoothed = { x: rawX, y: rawY };
-  } else {
+  if (smoothed === null) smoothed = { x: rawX, y: rawY };
+  else {
     smoothed.x = smoothed.x * (1 - SMOOTHING) + rawX * SMOOTHING;
     smoothed.y = smoothed.y * (1 - SMOOTHING) + rawY * SMOOTHING;
   }
 
-  if (isPinching) {
-    if (drawMode) {
-      // actively drawing
-      if (prevPoint) {
-        drawSegment(prevPoint, smoothed, colorInput.value, +sizeInput.value);
-      }
-      if (currentStroke) currentStroke.points.push({ x: smoothed.x, y: smoothed.y });
-      prevPoint = { x: smoothed.x, y: smoothed.y };
-      strokeActive = true;
-      statusEl.textContent = "✏️ Drawing";
-    } else {
-      const sinceLast =
-        lastStrokeEndTime === null ? Infinity : now - lastStrokeEndTime;
+  // ---- not pinching: commit + reset pinch state ----
+  if (!isPinching) {
+    if (strokeActive) endStroke(now);
+    pinchHoldStart = null;
+    drawUnlockTime = null;
+    pinchOriginPos = null;
+    eraserCancelled = false;
+    drawMode = false;
+    eraserMode = false;
+    clearOverlay();
+    statusEl.textContent = "Pinch & hold to start";
+    return;
+  }
 
-      if (sinceLast < GRACE_PERIOD_MS) {
-        // instant redraw from grace
+  // ---- pinching, not yet in draw or eraser mode ----
+  if (!drawMode && !eraserMode) {
+    // grace: instant resume in last committed mode
+    const sinceLast =
+      lastStrokeEndTime === null ? Infinity : now - lastStrokeEndTime;
+    if (sinceLast < GRACE_PERIOD_MS) {
+      if (lastCommittedMode === "erase") {
+        eraserMode = true;
+        currentStroke = {
+          mode: "erase",
+          size: eraserSize(),
+          points: [{ x: smoothed.x, y: smoothed.y }],
+        };
+      } else {
         drawMode = true;
-        prevPoint = { x: smoothed.x, y: smoothed.y };
-        strokeActive = true;
         currentStroke = {
           color: colorInput.value,
           size: +sizeInput.value,
+          mode: "draw",
           points: [{ x: smoothed.x, y: smoothed.y }],
         };
-        clearOverlay();
-        statusEl.textContent = "✏️ Drawing (grace)";
-      } else {
-        // start / continue ring
-        if (pinchHoldStart === null) pinchHoldStart = now;
-        const elapsed = now - pinchHoldStart;
-        const progress = Math.min(1, elapsed / HOLD_DURATION_MS);
-
-        clearOverlay();
-        drawProgressRing(overlayCtx, smoothed.x, smoothed.y, progress);
-        statusEl.textContent = `Hold… ${Math.round(progress * 100)}%`;
-
-        if (progress >= 1) {
-          drawMode = true;
-          prevPoint = { x: smoothed.x, y: smoothed.y };
-          strokeActive = true;
-          currentStroke = {
-            color: colorInput.value,
-            size: +sizeInput.value,
-            points: [{ x: smoothed.x, y: smoothed.y }],
-          };
-          clearOverlay();
-        }
       }
+      prevPoint = { x: smoothed.x, y: smoothed.y };
+      strokeActive = true;
+      clearOverlay();
+      statusEl.textContent =
+        lastCommittedMode === "erase" ? "🩹 Eraser" : "✏️ Drawing (grace)";
+      return;
     }
-  } else {
-    if (strokeActive) endStroke(now);
-    pinchHoldStart = null;
+
+    // charge draw ring
+    if (pinchHoldStart === null) pinchHoldStart = now;
+    const elapsed = now - pinchHoldStart;
+    const progress = Math.min(1, elapsed / HOLD_DURATION_MS);
+
     clearOverlay();
-    statusEl.textContent = "Pinch & hold to start";
+    drawProgressRing(overlayCtx, smoothed.x, smoothed.y, progress);
+    statusEl.textContent = `Hold… ${Math.round(progress * 100)}%`;
+
+    if (progress >= 1) {
+      // unlock draw, start eraser-charge tracking
+      drawMode = true;
+      drawUnlockTime = now;
+      pinchOriginPos = { x: smoothed.x, y: smoothed.y };
+      eraserCancelled = false;
+      currentStroke = {
+        color: colorInput.value,
+        size: +sizeInput.value,
+        mode: "draw",
+        points: [{ x: smoothed.x, y: smoothed.y }],
+      };
+      prevPoint = { x: smoothed.x, y: smoothed.y };
+      strokeActive = true;
+      clearOverlay();
+    }
+    return;
   }
+
+  // ---- drawing ----
+  if (drawMode) {
+    if (prevPoint) {
+      drawSegment(prevPoint, smoothed, currentStroke);
+      currentStroke.points.push({ x: smoothed.x, y: smoothed.y });
+    }
+    prevPoint = { x: smoothed.x, y: smoothed.y };
+
+    if (eraserCancelled) {
+      statusEl.textContent = "✏️ Drawing";
+      return;
+    }
+
+    const distFromOrigin = Math.hypot(
+      smoothed.x - pinchOriginPos.x,
+      smoothed.y - pinchOriginPos.y
+    );
+    if (distFromOrigin > ERASER_CANCEL_DISTANCE) {
+      eraserCancelled = true;
+      clearOverlay();
+      statusEl.textContent = "✏️ Drawing";
+      return;
+    }
+
+    const eraserElapsed = now - drawUnlockTime;
+    const eraserProgress = Math.min(1, eraserElapsed / ERASER_CHARGE_MS);
+
+    clearOverlay();
+    drawEraserRing(overlayCtx, smoothed.x, smoothed.y, eraserProgress);
+    statusEl.textContent = `✏️ Drawing · hold still for 🩹 ${Math.round(
+      eraserProgress * 100
+    )}%`;
+
+    if (eraserProgress >= 1) {
+      // commit draw stroke, switch to eraser
+      endStroke(now);
+      eraserMode = true;
+      currentStroke = {
+        mode: "erase",
+        size: eraserSize(),
+        points: [{ x: smoothed.x, y: smoothed.y }],
+      };
+      prevPoint = { x: smoothed.x, y: smoothed.y };
+      strokeActive = true;
+      clearOverlay();
+      statusEl.textContent = "🩹 Eraser";
+    }
+    return;
+  }
+
+  // ---- erasing ----
+  if (eraserMode) {
+    if (prevPoint) {
+      drawSegment(prevPoint, smoothed, currentStroke);
+      currentStroke.points.push({ x: smoothed.x, y: smoothed.y });
+    }
+    prevPoint = { x: smoothed.x, y: smoothed.y };
+    statusEl.textContent = "🩹 Eraser";
+  }
+}
+
+function eraserSize() {
+  return Math.max(ERASER_MIN_SIZE, +sizeInput.value * ERASER_SIZE_MULT);
 }
 
 function endStroke(now) {
   if (currentStroke && currentStroke.points.length > 0) {
     strokes.push(currentStroke);
+    lastCommittedMode = currentStroke.mode || "draw";
   }
   currentStroke = null;
   drawMode = false;
+  eraserMode = false;
   strokeActive = false;
   prevPoint = null;
   lastStrokeEndTime = now;
@@ -333,10 +480,15 @@ clearBtn.addEventListener("click", () => {
   strokes = [];
   currentStroke = null;
   drawMode = false;
+  eraserMode = false;
   strokeActive = false;
   prevPoint = null;
   pinchHoldStart = null;
+  drawUnlockTime = null;
+  pinchOriginPos = null;
+  eraserCancelled = false;
   lastStrokeEndTime = null;
+  lastCommittedMode = "draw";
   isPinching = false;
   smoothed = null;
   redrawStrokes();

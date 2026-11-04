@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Air Canvas — Pinch to Draw</title>
+  <title>Air Canvas — Pinch to Draw / Erase</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
@@ -11,7 +11,7 @@
 <body>
   <div class="app">
     <header>
-      <h1>Air Canvas <span>· pinch to draw</span></h1>
+      <h1>Air Canvas <span>· pinch to draw / erase</span></h1>
       <div class="controls">
         <label>Color <input type="color" id="color" value="#4d6bfe" /></label>
         <label>Size <input type="range" id="size" min="1" max="30" value="5" /></label>
@@ -29,8 +29,10 @@
     </div>
 
     <footer class="hint">
-      <strong>Pinch</strong> (thumb + index) and <strong>hold</strong> for 0.7s to start a stroke.
-      Release to end. Chain strokes within <strong>1.5s</strong> for instant redraw.
+      <strong>Pinch</strong> + hold <strong>0.7s</strong> → draw.
+      Keep holding still for <strong>0.8s</strong> more → <strong>eraser</strong> (ring turns red).
+      Move finger while holding = stay drawing (eraser cancels).
+      Release → end stroke. Re-pinch within <strong>1.5s</strong> → instant resume in last mode.
     </footer>
   </div>
   <script src="app.js"></script>

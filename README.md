@@ -1,89 +1,87 @@
-# Air Canvas — Pinch to Draw
+# Air Canvas — Pinch to Draw / Erase
 
-Gambar di layar pakai tangan. Pinch (jempol + telunjuk) dan **tahan** untuk memicu mode gambar — ada ring loading yang ngisi, abis penuh baru bisa nulis.
+Gambar dan hapus di layar pakai tangan. Semua mode dipicu pinch-hold — nggak ada tombol UI buat ganti mode.
 
 ## Fitur
 
-- **Pinch-hold trigger** — tahan pinch 0.7 detik → ring progress ngisi → baru masuk mode gambar.
-- **Grace period 1.5 detik** — abis satu stroke selesai, kalau lu pinch lagi dalam 1.5 detik, langsung bisa gambar tanpa nunggu ring penuh. Enak buat nulis huruf multi-stroke.
-- **Per-stroke** — tiap ngangkat jari (selesai satu garis), draw mode mati lagi. Line berikutnya butuh pinch-hold ulang (kecuali masih dalam grace window).
-- **Pilihan warna & ukuran brush**.
-- **Clear canvas**.
-- **Resize-safe** — stroke disimpan dalam array, di-replay kalau window di-resize.
+- **Pinch-hold 0.7s → draw.** Ring biru ngisi di titik pinch. Begitu penuh, draw aktif.
+- **Terus tahan & diem (total 1.5s) → eraser.** Abis draw unlock, muncul ring merah kecil. Tetap diem ~0.8s lagi → ring penuh → eraser aktif.
+- **Movement cancel.** Kalau lu udah mulai narik garis (gerak > 25px dari titik pinch), eraser charge otomatis batal buat pinch itu. Lu tetep di draw mode.
+- **Grace period 1.5s.** Abis release, pinch lagi dalam 1.5s → langsung aktif di mode terakhir (draw atau erase), nggak nunggu ring.
+- **Eraser** = `destination-out`, bener-bener ilangin pixel, bukan gambar putih. Replay saat resize juga pakai composite mode yang sama, jadi hasil hapus konsisten.
+- **Warna & ukuran brush** bisa diatur. Ukuran eraser otomatis lebih gede (`max(20, size × 4)`).
+- **Resize-safe.**
 
 ## Cara jalanin
 
-MediaPipe butuh HTTPS atau `localhost` buat akses kamera. Jadi **jangan buka `index.html` langsung via `file://`** — kamera bakal diblok.
-
-Serve via local HTTP server:
+MediaPipe butuh HTTPS atau `localhost` buat akses kamera. Jangan buka via `file://`.
 
 ```bash
 # Python 3
 python3 -m http.server 8000
 
-# atau Node.js
+# Node.js
 npx serve -l 8000
 
-# atau pakai extension VS Code "Live Server"
+# atau VS Code "Live Server"
 ```
 
-Lalu buka:
+Buka `http://localhost:8000`, klik **Allow** waktu diminta izin kamera.
 
-```
-http://localhost:8000
-```
+## Alur pakai
 
-Klik **Allow** waktu browser minta izin kamera.
-
-## Cara pakai
-
-1. Angkat tangan, tunjukin ke kamera. Kamu bakal liat dirimu (dimmed) sebagai background.
-2. Jempol + telunjuk deketin (pinch). Bakal muncul ring biru yang ngisi.
-3. Tahan ~0.7 detik sampe ring penuh. Baru bisa gambar.
-4. Gerakin tangan buat narik garis.
-5. Angkat jari buat selesai stroke.
-6. Mau stroke berikutnya? Pinch lagi. Kalau dalam 1.5 detik, langsung aktif. Kalau lebih, harus hold ulang.
+1. **Pinch** (jempol + telunjuk deketin). Ring biru mulai ngisi.
+2. Tahan ~0.7s → ring penuh → **draw mode aktif**. Mulai gerak buat gambar.
+3. Mau hapus? Tetap tahan pinch **tanpa gerak** (jangan lepas, jangan gerak jauh). Abis draw unlock, bakal muncul ring merah kecil yang ngisi.
+4. Kalau ring merah penuh (~1.5s total) → **eraser mode aktif**. Gerakin tangan buat hapus.
+5. Lepas pinch → stroke selesai, mulai grace window 1.5s.
+6. Pinch lagi dalam 1.5s → langsung aktif di mode terakhir (draw / erase). Pinch lagi setelah 1.5s → charge dari awal.
 
 ## Tuning
 
-Ada di bagian atas `app.js`:
+Semua di bagian atas `app.js`:
 
 ```
-const HOLD_DURATION_MS = 700;   // durasi hold buat unlock
-const GRACE_PERIOD_MS = 1500;   // grace window antar stroke
-const PINCH_ON = 0.30;          // threshold masuk state pinch
-const PINCH_OFF = 0.45;         // threshold keluar dari state pinch
-const SMOOTHING = 0.35;         // 0=no smoothing, 1=max lag
+const HOLD_DURATION_MS = 700;       // draw charge
+const ERASER_CHARGE_MS = 800;       // eraser charge (total 1.5s)
+const GRACE_PERIOD_MS = 1500;
+const PINCH_ON = 0.30;
+const PINCH_OFF = 0.45;
+const SMOOTHING = 0.35;
+const ERASER_CANCEL_DISTANCE = 25;  // px — movement that cancels eraser charge
+const ERASER_MIN_SIZE = 20;
+const ERASER_SIZE_MULT = 4;
 ```
 
-- Pinch susah kedetek? Naikin `PINCH_ON` jadi `0.35` atau `0.40`.
-- Pinch kepencet ga sengaja? Turunin `PINCH_ON` jadi `0.25`.
+- Pinch susah kedetek? Naikin `PINCH_ON` → `0.35`.
+- Eraser ke-trigger ga sengaja? Naikin `ERASER_CANCEL_DISTANCE` → `40` (lebih gampang di-cancel dengan gerakan kecil) atau naikin `ERASER_CHARGE_MS` → `1200`.
 - Ring kelamaan? Turunin `HOLD_DURATION_MS` ke `500`.
-- Grace window kegedean? Turunin `GRACE_PERIOD_MS` ke `1000`.
+- Grace kekecilan? Naikin `GRACE_PERIOD_MS` ke `2000`.
 
 ## Limitasi
 
-- **Satu tangan saja** — `maxNumHands: 1`. Gampang diubah kalau mau multi-tangan.
-- **Butuh cahaya cukup** — MediaPipe lebih akurat kalau tangan keliatan jelas.
-- **Background video dimmed 45%** — biar hasil gambar tetap keliatan jelas.
+- **Eraser butuh "hold still".** Kalau lu udah mulai gambar (gerak), lu nggak bisa masuk eraser dalam pinch yang sama. Lepas dulu, pinch lagi.
+- **Satu tangan** (`maxNumHands: 1`).
+- Butuh cahaya cukup.
 
 ## Stack
 
-- MediaPipe Hands (via CDN) — hand landmark detection
-- Vanilla JS + Canvas 2D — no build step, no bundler
-- Mirror video via CSS `scaleX(-1)`, landmark X dibalik (`1 - x`) biar sinkron
+- MediaPipe Hands (CDN) — landmark detection
+- Vanilla JS + Canvas 2D — no build step
+- Eraser pakai `globalCompositeOperation = "destination-out"`
+- Mirror video via CSS `scaleX(-1)`, landmark X dibalik (`1 - x`)
 
 ## Struktur
 
 ```
 .
-├── index.html   — struktur UI
-├── style.css    — tema gelap
-├── app.js       — hand tracking + drawing + gesture state machine
+├── index.html
+├── style.css
+├── app.js
 └── README.md
 ```
 
 ## Lisensi
 
-MIT — bebas dipakai dan dimodif.
+MIT.
 

@@ -147,8 +147,13 @@ h1 span {
   color: #a3a3a3;
   text-align: center;
   flex-shrink: 0;
+  line-height: 1.5;
 }
 
 .hint strong {
   color: #4d6bfe;
+}
+
+.hint strong:last-of-type {
+  color: #ff5050;
 }
