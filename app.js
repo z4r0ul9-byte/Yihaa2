@@ -1,24 +1,10 @@
 /**
- * Air Canvas — pinch-hold to draw / keep-holding-still to erase.
- *
- * Gesture state machine:
- *   IDLE
- *     │ pinch
- *     ▼
- *   CHARGING_DRAW   [0..500ms] — blue ring fills
- *     │ ring full
- *     ▼
- *   DRAWING         [500ms..] — stroke records, draw active
- *     │ still pinched & not moved > 25px from origin
- *     ▼
- *   CHARGING_ERASER [500..2000ms] — small red ring fills (1500ms window)
- *     │ ring full
- *     ▼
- *   ERASING         [2000ms..] — eraser stroke records
- *
- * Release anywhere → commit current stroke, start grace window.
- * Re-pinch within 1.5s → instant resume in last committed mode.
- * Movement during CHARGING_ERASER cancels the eraser for this pinch.
+ * Air Canvas — Hand Gesture Mode (No Pinch)
+ * 
+ * Gesture logic:
+ * ✋ OPEN_PALM: Hold for 1s to toggle mode (IDLE -> DRAW -> ERASE -> IDLE).
+ * ☝️ POINTING: Draws or Erases based on active mode. Smooth continuous stroke.
+ * ✊ OTHER: Stops the current stroke.
  */
 
 // ===== DOM =====
@@ -36,42 +22,23 @@ const drawCtx = drawCanvas.getContext("2d");
 const overlayCtx = overlayCanvas.getContext("2d");
 
 // ===== Constants =====
-const HOLD_DURATION_MS = 500;      // draw charge — snappy unlock
-const ERASER_CHARGE_MS = 1500;     // eraser charge — long, intentional hold
-const GRACE_PERIOD_MS = 1500;
-const PINCH_ON = 0.30;
-const PINCH_OFF = 0.45;
-const SMOOTHING = 0.35;
-const RING_RADIUS = 40;
-const ERASER_RING_RADIUS = 24;
-const RING_LINE_WIDTH = 4;
-const ERASER_CANCEL_DISTANCE = 25; // px movement from pinch origin that cancels eraser charge
+const HOLD_DURATION_MS = 1000;     // 1 second hold on open palm to switch
+const SMOOTHING = 0.40;
+const RING_RADIUS = 36;
+const RING_LINE_WIDTH = 5;
 const ERASER_MIN_SIZE = 20;
 const ERASER_SIZE_MULT = 4;
 
 // ===== State =====
-let isPinching = false;
-let smoothed = null;
+let appMode = 'IDLE'; // 'IDLE' | 'DRAW' | 'ERASE'
+let palmHoldStart = null;
+let smoothedPoint = null;
 
-// pinch-state (reset only when pinch ends)
-let pinchHoldStart = null;
-let drawUnlockTime = null;
-let pinchOriginPos = null;
-let eraserCancelled = false;
-
-// stroke-state
-let drawMode = false;
-let eraserMode = false;
-let strokeActive = false;
+// Stroke tracking
+let strokes = [];
 let currentStroke = null;
 let prevPoint = null;
 
-// history
-let strokes = [];
-let lastStrokeEndTime = null;
-let lastCommittedMode = "draw";
-
-// layout
 let cachedVideoAspect = null;
 
 // ===== Layout sync =====
@@ -102,7 +69,6 @@ function syncStageInner() {
 
 function resizeCanvases(w, h) {
   const dpr = window.devicePixelRatio || 1;
-
   drawCanvas.width = w * dpr;
   drawCanvas.height = h * dpr;
   overlayCanvas.width = w * dpr;
@@ -119,49 +85,19 @@ window.addEventListener("resize", () => {
   syncStageInner();
 });
 
-// ===== Stroke rendering =====
-function redrawStrokes() {
-  const w = drawCanvas.width / (window.devicePixelRatio || 1);
-  const h = drawCanvas.height / (window.devicePixelRatio || 1);
+// ===== Rendering Helpers =====
+function drawSegment(from, to, stroke) {
   drawCtx.save();
-  drawCtx.globalCompositeOperation = "source-over";
-  drawCtx.clearRect(0, 0, w, h);
-  drawCtx.restore();
-
-  for (const stroke of strokes) {
-    if (!stroke.points || stroke.points.length < 1) continue;
-    applyStrokeStyle(stroke);
-    drawCtx.beginPath();
-    const p0 = stroke.points[0];
-    drawCtx.moveTo(p0.x, p0.y);
-    for (let i = 1; i < stroke.points.length; i++) {
-      const p = stroke.points[i];
-      drawCtx.lineTo(p.x, p.y);
-    }
-    if (stroke.points.length === 1) {
-      drawCtx.lineTo(p0.x + 0.01, p0.y + 0.01);
-    }
-    drawCtx.stroke();
-    drawCtx.restore();
-  }
-}
-
-function applyStrokeStyle(stroke) {
-  drawCtx.save();
-  if (stroke.mode === "erase") {
-    drawCtx.globalCompositeOperation = "destination-out";
-    drawCtx.strokeStyle = "rgba(0,0,0,1)";
+  if (stroke.mode === 'erase') {
+    drawCtx.globalCompositeOperation = 'destination-out';
+    drawCtx.strokeStyle = 'rgba(0,0,0,1)';
   } else {
-    drawCtx.globalCompositeOperation = "source-over";
+    drawCtx.globalCompositeOperation = 'source-over';
     drawCtx.strokeStyle = stroke.color;
   }
   drawCtx.lineWidth = stroke.size;
-  drawCtx.lineCap = "round";
-  drawCtx.lineJoin = "round";
-}
-
-function drawSegment(from, to, stroke) {
-  applyStrokeStyle(stroke);
+  drawCtx.lineCap = 'round';
+  drawCtx.lineJoin = 'round';
   drawCtx.beginPath();
   drawCtx.moveTo(from.x, from.y);
   drawCtx.lineTo(to.x, to.y);
@@ -169,14 +105,37 @@ function drawSegment(from, to, stroke) {
   drawCtx.restore();
 }
 
-// ===== Overlay =====
-function clearOverlay() {
-  const w = overlayCanvas.width / (window.devicePixelRatio || 1);
-  const h = overlayCanvas.height / (window.devicePixelRatio || 1);
-  overlayCtx.clearRect(0, 0, w, h);
+function redrawStrokes() {
+  const w = drawCanvas.width / (window.devicePixelRatio || 1);
+  const h = drawCanvas.height / (window.devicePixelRatio || 1);
+  drawCtx.clearRect(0, 0, w, h);
+
+  for (const stroke of strokes) {
+    if (!stroke.points || stroke.points.length < 1) continue;
+    drawCtx.save();
+    if (stroke.mode === 'erase') {
+      drawCtx.globalCompositeOperation = 'destination-out';
+      drawCtx.strokeStyle = 'rgba(0,0,0,1)';
+    } else {
+      drawCtx.globalCompositeOperation = 'source-over';
+      drawCtx.strokeStyle = stroke.color;
+    }
+    drawCtx.lineWidth = stroke.size;
+    drawCtx.lineCap = 'round';
+    drawCtx.lineJoin = 'round';
+    drawCtx.beginPath();
+    const p0 = stroke.points[0];
+    drawCtx.moveTo(p0.x, p0.y);
+    for (let i = 1; i < stroke.points.length; i++) {
+      drawCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
+    }
+    if (stroke.points.length === 1) drawCtx.lineTo(p0.x + 0.01, p0.y + 0.01);
+    drawCtx.stroke();
+    drawCtx.restore();
+  }
 }
 
-function drawProgressRing(x, y, progress) {
+function drawProgressRing(x, y, progress, currentMode) {
   overlayCtx.save();
 
   overlayCtx.beginPath();
@@ -184,6 +143,10 @@ function drawProgressRing(x, y, progress) {
   overlayCtx.strokeStyle = "rgba(255,255,255,0.18)";
   overlayCtx.lineWidth = RING_LINE_WIDTH;
   overlayCtx.stroke();
+
+  let nextColor = "#4d6bfe"; 
+  if (currentMode === 'DRAW') nextColor = "#ff5050"; // Next is ERASE
+  else if (currentMode === 'ERASE') nextColor = "#e5e5e5"; // Next is IDLE
 
   if (progress > 0) {
     overlayCtx.beginPath();
@@ -194,56 +157,32 @@ function drawProgressRing(x, y, progress) {
       -Math.PI / 2,
       -Math.PI / 2 + Math.PI * 2 * progress
     );
-    overlayCtx.strokeStyle = "#4d6bfe";
+    overlayCtx.strokeStyle = nextColor;
     overlayCtx.lineWidth = RING_LINE_WIDTH;
     overlayCtx.lineCap = "round";
     overlayCtx.stroke();
   }
 
   overlayCtx.beginPath();
-  overlayCtx.arc(x, y, 3, 0, Math.PI * 2);
-  overlayCtx.fillStyle = "#4d6bfe";
+  overlayCtx.arc(x, y, 4, 0, Math.PI * 2);
+  overlayCtx.fillStyle = nextColor;
   overlayCtx.fill();
 
   overlayCtx.restore();
 }
 
-function drawEraserRing(x, y, progress) {
+function drawCursor(x, y) {
   overlayCtx.save();
-
   overlayCtx.beginPath();
-  overlayCtx.arc(x, y, ERASER_RING_RADIUS, 0, Math.PI * 2);
-  overlayCtx.strokeStyle = "rgba(255,80,80,0.20)";
-  overlayCtx.lineWidth = 3;
-  overlayCtx.stroke();
-
-  if (progress > 0) {
-    overlayCtx.beginPath();
-    overlayCtx.arc(
-      x,
-      y,
-      ERASER_RING_RADIUS,
-      -Math.PI / 2,
-      -Math.PI / 2 + Math.PI * 2 * progress
-    );
-    overlayCtx.strokeStyle = "#ff5050";
-    overlayCtx.lineWidth = 3;
-    overlayCtx.lineCap = "round";
-    overlayCtx.stroke();
-  }
-
-  overlayCtx.beginPath();
-  overlayCtx.arc(x, y, 2.5, 0, Math.PI * 2);
-  overlayCtx.fillStyle = "#ff5050";
+  overlayCtx.arc(x, y, 6, 0, Math.PI * 2);
+  overlayCtx.fillStyle = "rgba(255,255,255,0.5)";
   overlayCtx.fill();
-
   overlayCtx.restore();
 }
 
 // ===== MediaPipe =====
 const hands = new Hands({
-  locateFile: (file) =>
-    `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
 });
 
 hands.setOptions({
@@ -257,241 +196,136 @@ hands.onResults(onHandResults);
 
 const camera = new Camera(video, {
   onFrame: async () => {
-    try {
-      await hands.send({ image: video });
-    } catch (e) {
-      /* ignore */
-    }
+    try { await hands.send({ image: video }); } catch (e) {}
   },
   width: 1280,
   height: 720,
 });
 
-camera
-  .start()
-  .then(() => {
-    statusEl.textContent = "Ready — show your hand";
-  })
-  .catch((err) => {
-    statusEl.textContent = "Camera error: " + (err?.message || err);
-  });
+camera.start().catch((err) => {
+  statusEl.textContent = "Camera error: " + (err?.message || err);
+});
 
-// ===== Main handler =====
+// ===== Gesture Detection =====
+function getGesture(lm) {
+  const wrist = lm[0];
+  const dist = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y);
+  const isExtended = (tip, pip) => dist(lm[tip], wrist) > dist(lm[pip], wrist) * 1.1;
+
+  const indexUp = isExtended(8, 6);
+  const middleUp = isExtended(12, 10);
+  const ringUp = isExtended(16, 14);
+  const pinkyUp = isExtended(20, 18);
+
+  if (indexUp && middleUp && ringUp && pinkyUp) return 'OPEN_PALM';
+  if (indexUp && !middleUp && !ringUp) return 'POINTING'; 
+  
+  return 'OTHER';
+}
+
+function endActiveStroke() {
+  if (currentStroke && currentStroke.points.length > 0) {
+    strokes.push(currentStroke);
+  }
+  currentStroke = null;
+  prevPoint = null;
+}
+
+// ===== Main Handler =====
 function onHandResults(results) {
   if (video.videoWidth) syncStageInner();
-
   const now = performance.now();
   const w = drawCanvas.width / (window.devicePixelRatio || 1);
   const h = drawCanvas.height / (window.devicePixelRatio || 1);
   if (!w || !h) return;
 
-  // ---- no hand: commit any active stroke, reset pinch state ----
+  // Clear overlay for this frame
+  overlayCtx.clearRect(0, 0, w, h);
+
   if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
-    if (strokeActive) endStroke(now);
-    isPinching = false;
-    smoothed = null;
-    pinchHoldStart = null;
-    drawUnlockTime = null;
-    pinchOriginPos = null;
-    eraserCancelled = false;
-    drawMode = false;
-    eraserMode = false;
-    clearOverlay();
-    statusEl.textContent = "No hand detected";
+    endActiveStroke();
+    palmHoldStart = null;
+    smoothedPoint = null;
+    statusEl.textContent = `Mode: ${appMode} | No hand`;
     return;
   }
 
-  // ---- compute pinch ratio + screen point ----
   const lm = results.multiHandLandmarks[0];
-  const thumb = lm[4];
-  const index = lm[8];
-  const wrist = lm[0];
-  const middleMcp = lm[9];
+  const gesture = getGesture(lm);
 
-  const pinchDist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
-  const palmSize =
-    Math.hypot(wrist.x - middleMcp.x, wrist.y - middleMcp.y) || 0.0001;
-  const pinchRatio = pinchDist / palmSize;
+  // Landmark 9 = palm center, 8 = index tip
+  const palmX = (1 - lm[9].x) * w;
+  const palmY = lm[9].y * h;
+  const indexX = (1 - lm[8].x) * w;
+  const indexY = lm[8].y * h;
 
-  if (!isPinching && pinchRatio < PINCH_ON) isPinching = true;
-  else if (isPinching && pinchRatio > PINCH_OFF) isPinching = false;
-
-  const rawX = (1 - (thumb.x + index.x) / 2) * w;
-  const rawY = ((thumb.y + index.y) / 2) * h;
-
-  if (smoothed === null) smoothed = { x: rawX, y: rawY };
-  else {
-    smoothed.x = smoothed.x * (1 - SMOOTHING) + rawX * SMOOTHING;
-    smoothed.y = smoothed.y * (1 - SMOOTHING) + rawY * SMOOTHING;
+  if (smoothedPoint === null) {
+    smoothedPoint = { x: indexX, y: indexY };
+  } else {
+    smoothedPoint.x = smoothedPoint.x * (1 - SMOOTHING) + indexX * SMOOTHING;
+    smoothedPoint.y = smoothedPoint.y * (1 - SMOOTHING) + indexY * SMOOTHING;
   }
 
-  // ---- not pinching: commit + reset pinch state ----
-  if (!isPinching) {
-    if (strokeActive) endStroke(now);
-    pinchHoldStart = null;
-    drawUnlockTime = null;
-    pinchOriginPos = null;
-    eraserCancelled = false;
-    drawMode = false;
-    eraserMode = false;
-    clearOverlay();
-    statusEl.textContent = "Pinch & hold to start";
-    return;
-  }
-
-  // ---- pinching, not yet in draw or eraser mode ----
-  if (!drawMode && !eraserMode) {
-    // grace: instant resume in last committed mode
-    const sinceLast =
-      lastStrokeEndTime === null ? Infinity : now - lastStrokeEndTime;
-    if (sinceLast < GRACE_PERIOD_MS) {
-      if (lastCommittedMode === "erase") {
-        eraserMode = true;
-        currentStroke = {
-          mode: "erase",
-          size: eraserSize(),
-          points: [{ x: smoothed.x, y: smoothed.y }],
-        };
-      } else {
-        drawMode = true;
-        currentStroke = {
-          color: colorInput.value,
-          size: +sizeInput.value,
-          mode: "draw",
-          points: [{ x: smoothed.x, y: smoothed.y }],
-        };
-      }
-      prevPoint = { x: smoothed.x, y: smoothed.y };
-      strokeActive = true;
-      clearOverlay();
-      statusEl.textContent =
-        lastCommittedMode === "erase" ? "🩹 Eraser" : "✏️ Drawing (grace)";
-      return;
-    }
-
-    // charge draw ring
-    if (pinchHoldStart === null) pinchHoldStart = now;
-    const elapsed = now - pinchHoldStart;
+  if (gesture === 'OPEN_PALM') {
+    endActiveStroke(); // stop drawing while holding to switch
+    
+    if (palmHoldStart === null) palmHoldStart = now;
+    const elapsed = now - palmHoldStart;
     const progress = Math.min(1, elapsed / HOLD_DURATION_MS);
-    const remainingSec = Math.max(0, (HOLD_DURATION_MS - elapsed) / 1000);
-
-    clearOverlay();
-    drawProgressRing(overlayCtx, smoothed.x, smoothed.y, progress);
-    statusEl.textContent = `Hold ✏️ — ${remainingSec.toFixed(1)}s`;
-
+    
+    drawProgressRing(palmX, palmY, progress, appMode);
+    const remain = Math.max(0, (HOLD_DURATION_MS - elapsed) / 1000);
+    statusEl.textContent = `Switching in ${remain.toFixed(1)}s… (${appMode})`;
+    
     if (progress >= 1) {
-      // unlock draw, start eraser-charge tracking
-      drawMode = true;
-      drawUnlockTime = now;
-      pinchOriginPos = { x: smoothed.x, y: smoothed.y };
-      eraserCancelled = false;
-      currentStroke = {
-        color: colorInput.value,
-        size: +sizeInput.value,
-        mode: "draw",
-        points: [{ x: smoothed.x, y: smoothed.y }],
-      };
-      prevPoint = { x: smoothed.x, y: smoothed.y };
-      strokeActive = true;
-      clearOverlay();
+      if (appMode === 'IDLE') appMode = 'DRAW';
+      else if (appMode === 'DRAW') appMode = 'ERASE';
+      else appMode = 'IDLE';
+      
+      palmHoldStart = null; // reset so user must release to hold again
     }
-    return;
+  } else {
+    palmHoldStart = null; // cancel hold if gesture changes
+    
+    if (gesture === 'POINTING') {
+      if (appMode === 'DRAW') {
+        if (prevPoint) {
+          drawSegment(prevPoint, smoothedPoint, currentStroke);
+        }
+        if (!currentStroke) {
+          currentStroke = { mode: 'draw', color: colorInput.value, size: +sizeInput.value, points: [] };
+        }
+        currentStroke.points.push({ x: smoothedPoint.x, y: smoothedPoint.y });
+        prevPoint = { x: smoothedPoint.x, y: smoothedPoint.y };
+        statusEl.textContent = `✏️ DRAW MODE`;
+      } else if (appMode === 'ERASE') {
+        if (prevPoint) {
+          drawSegment(prevPoint, smoothedPoint, currentStroke);
+        }
+        if (!currentStroke) {
+          currentStroke = { mode: 'erase', size: Math.max(ERASER_MIN_SIZE, +sizeInput.value * ERASER_SIZE_MULT), points: [] };
+        }
+        currentStroke.points.push({ x: smoothedPoint.x, y: smoothedPoint.y });
+        prevPoint = { x: smoothedPoint.x, y: smoothedPoint.y };
+        statusEl.textContent = `🩹 ERASE MODE`;
+      } else {
+        endActiveStroke();
+        drawCursor(smoothedPoint.x, smoothedPoint.y);
+        statusEl.textContent = `IDLE (Show ✋ to change mode)`;
+      }
+    } else {
+      // OTHER gesture (e.g. fist)
+      endActiveStroke();
+      statusEl.textContent = `Mode: ${appMode}`;
+    }
   }
-
-  // ---- drawing ----
-  if (drawMode) {
-    if (prevPoint) {
-      drawSegment(prevPoint, smoothed, currentStroke);
-      currentStroke.points.push({ x: smoothed.x, y: smoothed.y });
-    }
-    prevPoint = { x: smoothed.x, y: smoothed.y };
-
-    if (eraserCancelled) {
-      statusEl.textContent = "✏️ Drawing";
-      return;
-    }
-
-    const distFromOrigin = Math.hypot(
-      smoothed.x - pinchOriginPos.x,
-      smoothed.y - pinchOriginPos.y
-    );
-    if (distFromOrigin > ERASER_CANCEL_DISTANCE) {
-      eraserCancelled = true;
-      clearOverlay();
-      statusEl.textContent = "✏️ Drawing";
-      return;
-    }
-
-    const eraserElapsed = now - drawUnlockTime;
-    const eraserProgress = Math.min(1, eraserElapsed / ERASER_CHARGE_MS);
-    const eraserRemainingSec = Math.max(0, (ERASER_CHARGE_MS - eraserElapsed) / 1000);
-
-    clearOverlay();
-    drawEraserRing(overlayCtx, smoothed.x, smoothed.y, eraserProgress);
-    statusEl.textContent = `✏️ Drawing · 🩹 in ${eraserRemainingSec.toFixed(1)}s`;
-
-    if (eraserProgress >= 1) {
-      // commit draw stroke, switch to eraser
-      endStroke(now);
-      eraserMode = true;
-      currentStroke = {
-        mode: "erase",
-        size: eraserSize(),
-        points: [{ x: smoothed.x, y: smoothed.y }],
-      };
-      prevPoint = { x: smoothed.x, y: smoothed.y };
-      strokeActive = true;
-      clearOverlay();
-      statusEl.textContent = "🩹 Eraser";
-    }
-    return;
-  }
-
-  // ---- erasing ----
-  if (eraserMode) {
-    if (prevPoint) {
-      drawSegment(prevPoint, smoothed, currentStroke);
-      currentStroke.points.push({ x: smoothed.x, y: smoothed.y });
-    }
-    prevPoint = { x: smoothed.x, y: smoothed.y };
-    statusEl.textContent = "🩹 Eraser";
-  }
-}
-
-function eraserSize() {
-  return Math.max(ERASER_MIN_SIZE, +sizeInput.value * ERASER_SIZE_MULT);
-}
-
-function endStroke(now) {
-  if (currentStroke && currentStroke.points.length > 0) {
-    strokes.push(currentStroke);
-    lastCommittedMode = currentStroke.mode || "draw";
-  }
-  currentStroke = null;
-  drawMode = false;
-  eraserMode = false;
-  strokeActive = false;
-  prevPoint = null;
-  lastStrokeEndTime = now;
 }
 
 // ===== UI =====
 clearBtn.addEventListener("click", () => {
   strokes = [];
-  currentStroke = null;
-  drawMode = false;
-  eraserMode = false;
-  strokeActive = false;
-  prevPoint = null;
-  pinchHoldStart = null;
-  drawUnlockTime = null;
-  pinchOriginPos = null;
-  eraserCancelled = false;
-  lastStrokeEndTime = null;
-  lastCommittedMode = "draw";
-  isPinching = false;
-  smoothed = null;
+  endActiveStroke();
   redrawStrokes();
-  clearOverlay();
+  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
   statusEl.textContent = "Cleared";
 });
