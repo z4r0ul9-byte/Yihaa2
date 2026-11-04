@@ -5,16 +5,16 @@
  *   IDLE
  *     │ pinch
  *     ▼
- *   CHARGING_DRAW   [0..700ms] — blue ring fills
+ *   CHARGING_DRAW   [0..500ms] — blue ring fills
  *     │ ring full
  *     ▼
- *   DRAWING         [700ms..] — stroke records, draw active
+ *   DRAWING         [500ms..] — stroke records, draw active
  *     │ still pinched & not moved > 25px from origin
  *     ▼
- *   CHARGING_ERASER [700..1500ms] — small red ring fills
+ *   CHARGING_ERASER [500..2000ms] — small red ring fills (1500ms window)
  *     │ ring full
  *     ▼
- *   ERASING         [1500ms..] — eraser stroke records
+ *   ERASING         [2000ms..] — eraser stroke records
  *
  * Release anywhere → commit current stroke, start grace window.
  * Re-pinch within 1.5s → instant resume in last committed mode.
@@ -36,8 +36,8 @@ const drawCtx = drawCanvas.getContext("2d");
 const overlayCtx = overlayCanvas.getContext("2d");
 
 // ===== Constants =====
-const HOLD_DURATION_MS = 700;      // draw charge time
-const ERASER_CHARGE_MS = 800;      // additional time to reach eraser (total 1.5s)
+const HOLD_DURATION_MS = 500;      // draw charge — snappy unlock
+const ERASER_CHARGE_MS = 1500;     // eraser charge — long, intentional hold
 const GRACE_PERIOD_MS = 1500;
 const PINCH_ON = 0.30;
 const PINCH_OFF = 0.45;
@@ -373,10 +373,11 @@ function onHandResults(results) {
     if (pinchHoldStart === null) pinchHoldStart = now;
     const elapsed = now - pinchHoldStart;
     const progress = Math.min(1, elapsed / HOLD_DURATION_MS);
+    const remainingSec = Math.max(0, (HOLD_DURATION_MS - elapsed) / 1000);
 
     clearOverlay();
     drawProgressRing(overlayCtx, smoothed.x, smoothed.y, progress);
-    statusEl.textContent = `Hold… ${Math.round(progress * 100)}%`;
+    statusEl.textContent = `Hold ✏️ — ${remainingSec.toFixed(1)}s`;
 
     if (progress >= 1) {
       // unlock draw, start eraser-charge tracking
@@ -423,12 +424,11 @@ function onHandResults(results) {
 
     const eraserElapsed = now - drawUnlockTime;
     const eraserProgress = Math.min(1, eraserElapsed / ERASER_CHARGE_MS);
+    const eraserRemainingSec = Math.max(0, (ERASER_CHARGE_MS - eraserElapsed) / 1000);
 
     clearOverlay();
     drawEraserRing(overlayCtx, smoothed.x, smoothed.y, eraserProgress);
-    statusEl.textContent = `✏️ Drawing · hold still for 🩹 ${Math.round(
-      eraserProgress * 100
-    )}%`;
+    statusEl.textContent = `✏️ Drawing · 🩹 in ${eraserRemainingSec.toFixed(1)}s`;
 
     if (eraserProgress >= 1) {
       // commit draw stroke, switch to eraser
