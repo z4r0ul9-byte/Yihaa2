@@ -29,6 +29,8 @@ header {
   background: #161616;
   border-bottom: 1px solid #262626;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 h1 {
@@ -47,7 +49,8 @@ h1 span {
 .controls {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .controls label {
@@ -69,7 +72,7 @@ h1 span {
 }
 
 .controls input[type="range"] {
-  width: 100px;
+  width: 80px;
   accent-color: #4d6bfe;
 }
 
@@ -152,8 +155,4 @@ h1 span {
 
 .hint strong {
   color: #4d6bfe;
-}
-
-.hint strong:last-of-type {
-  color: #ff5050;
 }

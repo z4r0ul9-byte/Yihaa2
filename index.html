@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Air Canvas — Neon Portal HUD</title>
+  <title>Air Canvas — Dimensional Portal</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
@@ -11,11 +11,13 @@
 <body>
   <div class="app">
     <header>
-      <h1>Air Canvas <span>· neon portal</span></h1>
+      <h1>Air Canvas <span>· dimensional portal</span></h1>
       <div class="controls">
         <label>Color <input type="color" id="color" value="#00ffff" /></label>
         <label>Size <input type="range" id="size" min="1" max="30" value="5" /></label>
-        <button id="portalBtn" type="button">Portal</button>
+        <button id="portalBtn" type="button">Portal: OFF</button>
+        <button id="gestureBtn" type="button">✋ Mode: ON</button>
+        <button id="manualModeBtn" type="button">Mode: IDLE</button>
         <button id="clear" type="button">Clear</button>
         <button id="save" type="button">Save</button>
       </div>
@@ -31,9 +33,8 @@
     </div>
 
     <footer class="hint">
-      <strong>Tombol Portal</strong> → Memunculkan HUD 3D.<br/>
-      <strong>✋ One Open Palm</strong> + hold <strong>1s</strong> → switch mode (Idle → Draw → Erase).<br/>
-      <strong>☝️ Pointing</strong> → draw / erase.
+      <strong>Portal ON</strong> → Tarik 2 tangan buat buka celah dimensi (filter kamera).<br/>
+      <strong>Tombol Mode</strong> → Matiin ✋ kalau mau fokus ngetes portal biar ga berantakan.
     </footer>
   </div>
   <script src="app.js"></script>

@@ -1,5 +1,5 @@
 /**
- * Air Canvas — Neon Gesture Mode with Dynamic Web Portal
+ * Air Canvas — Dimensional Portal & 2-Hand Web
  */
 
 // ===== DOM =====
@@ -12,14 +12,20 @@ const sizeInput = document.getElementById("size");
 const clearBtn = document.getElementById("clear");
 const saveBtn = document.getElementById("save");
 const portalBtn = document.getElementById("portalBtn");
+const gestureBtn = document.getElementById("gestureBtn");
+const manualModeBtn = document.getElementById("manualModeBtn");
 const stage = document.getElementById("stage");
 const stageInner = document.getElementById("stageInner");
 
 const drawCtx = drawCanvas.getContext("2d");
 const overlayCtx = overlayCanvas.getContext("2d");
 
+// Offscreen canvas for portal filter
+const filterCanvas = document.createElement('canvas');
+const filterCtx = filterCanvas.getContext('2d');
+
 // ===== Constants =====
-const HOLD_DURATION_MS = 1000;     // 1 second hold on open palm to switch
+const HOLD_DURATION_MS = 1000;
 const SMOOTHING = 0.40;
 const RING_RADIUS = 36;
 const RING_LINE_WIDTH = 5;
@@ -31,6 +37,7 @@ let appMode = 'IDLE'; // 'IDLE' | 'DRAW' | 'ERASE'
 let palmHoldStart = null;
 let smoothedPoint = null;
 let isPortalActive = false;
+let isGestureActive = true; // Toggle for ✋ mode switching
 
 // Stroke tracking
 let strokes = [];
@@ -71,6 +78,9 @@ function resizeCanvases(w, h) {
   drawCanvas.height = h * dpr;
   overlayCanvas.width = w * dpr;
   overlayCanvas.height = h * dpr;
+  
+  filterCanvas.width = w;
+  filterCanvas.height = h;
 
   drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -182,105 +192,114 @@ function drawCursor(x, y) {
   overlayCtx.restore();
 }
 
-// Dynamic Web Portal following the hand
-function drawWebPortal(lm, w, h) {
-  const cx = (1 - lm[9].x) * w;
-  const cy = lm[9].y * h;
+// ===== Dimensional Portal & Web Logic =====
+function drawDimensionalPortal(results, w, h) {
+  const numHands = results.multiHandLandmarks.length;
   
-  // Fingertips: Thumb, Index, Middle, Ring, Pinky
-  const fingers = [4, 8, 12, 16, 20].map(idx => ({
-    x: (1 - lm[idx].x) * w,
-    y: lm[idx].y * h
-  }));
-
-  // 3D Depth offset (moving "into" the screen)
-  const dx = 25;
-  const dy = -25;
+  // Render camera feed with a filter (e.g., Invert + Hue shift for dimension look)
+  filterCtx.clearRect(0, 0, w, h);
+  filterCtx.filter = 'invert(1) hue-rotate(180deg) contrast(1.5)';
+  filterCtx.drawImage(video, 0, 0, w, h);
+  filterCtx.filter = 'none';
 
   overlayCtx.save();
-
-  // --- Draw Back Web (Darker / smaller) ---
-  overlayCtx.strokeStyle = 'rgba(255, 0, 85, 0.3)';
-  overlayCtx.shadowColor = '#ff0055';
-  overlayCtx.shadowBlur = 10;
-  overlayCtx.lineWidth = 1.5;
-
-  // Back rays
-  fingers.forEach(f => {
-    overlayCtx.beginPath();
-    overlayCtx.moveTo(cx + dx, cy + dy);
-    overlayCtx.lineTo(f.x + dx, f.y + dy);
-    overlayCtx.stroke();
-  });
-
-  // Back rings
-  for (let r = 1; r <= 4; r++) {
-    const ratio = r / 4;
-    overlayCtx.beginPath();
-    fingers.forEach((f, i) => {
-      const fx = cx + dx + (f.x - cx) * ratio;
-      const fy = cy + dy + (f.y - cy) * ratio;
-      if (i === 0) overlayCtx.moveTo(fx, fy);
-      else overlayCtx.lineTo(fx, fy);
-    });
-    overlayCtx.closePath();
-    overlayCtx.stroke();
-  }
-
-  // --- Draw Depth Connecting Lines ---
-  overlayCtx.strokeStyle = 'rgba(255, 0, 85, 0.5)';
-  overlayCtx.lineWidth = 1;
-  fingers.forEach(f => {
-    overlayCtx.beginPath();
-    overlayCtx.moveTo(f.x, f.y);
-    overlayCtx.lineTo(f.x + dx, f.y + dy);
-    overlayCtx.stroke();
-  });
-
-  // --- Draw Front Web (Bright / neon) ---
-  overlayCtx.strokeStyle = '#ff0055';
-  overlayCtx.shadowBlur = 20;
-  overlayCtx.lineWidth = 2.5;
-
-  // Front rays
-  fingers.forEach(f => {
-    overlayCtx.beginPath();
-    overlayCtx.moveTo(cx, cy);
-    overlayCtx.lineTo(f.x, f.y);
-    overlayCtx.stroke();
-  });
-
-  // Front rings
-  for (let r = 1; r <= 4; r++) {
-    const ratio = r / 4;
-    overlayCtx.beginPath();
-    fingers.forEach((f, i) => {
-      const fx = cx + (f.x - cx) * ratio;
-      const fy = cy + (f.y - cy) * ratio;
-      if (i === 0) overlayCtx.moveTo(fx, fy);
-      else overlayCtx.lineTo(fx, fy);
-    });
-    overlayCtx.closePath();
-    overlayCtx.stroke();
-  }
-
-  // --- Center HUD (Floating info) ---
-  overlayCtx.shadowBlur = 15;
-  overlayCtx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-  overlayCtx.beginPath();
-  overlayCtx.arc(cx, cy, 28, 0, Math.PI * 2);
-  overlayCtx.fill();
   
-  overlayCtx.strokeStyle = '#00ffff';
-  overlayCtx.lineWidth = 2;
-  overlayCtx.stroke();
+  // Create clipping path based on hands
+  overlayCtx.beginPath();
+  
+  if (numHands === 2) {
+    // Bounding box between both hands for the portal window
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+    results.multiHandLandmarks.forEach(lm => {
+      lm.forEach(p => {
+        const px = (1 - p.x) * w;
+        const py = p.y * h;
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+      });
+    });
+    
+    // Draw a jagged/tech rectangle
+    overlayCtx.rect(minX, minY, maxX - minX, maxY - minY);
+  } else if (numHands === 1) {
+    // Bounding box around 1 hand
+    const lm = results.multiHandLandmarks[0];
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+    lm.forEach(p => {
+      const px = (1 - p.x) * w;
+      const py = p.y * h;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+    });
+    overlayCtx.rect(minX, minY, maxX - minX, maxY - minY);
+  }
+  
+  if (numHands > 0) {
+    overlayCtx.clip(); // Apply portal window
+    
+    // Draw the filtered dimension
+    overlayCtx.drawImage(filterCanvas, 0, 0);
+    
+    // Add a glowing tech border around the clip
+    overlayCtx.restore(); // Restore to draw border
+    overlayCtx.save();
+    
+    overlayCtx.strokeStyle = '#00ffff';
+    overlayCtx.shadowColor = '#00ffff';
+    overlayCtx.shadowBlur = 20;
+    overlayCtx.lineWidth = 3;
+    overlayCtx.stroke(); // Strokes the path we just defined
 
-  overlayCtx.fillStyle = '#00ffff';
-  overlayCtx.font = 'bold 11px monospace';
-  overlayCtx.textAlign = 'center';
-  overlayCtx.shadowColor = '#00ffff';
-  overlayCtx.fillText(appMode, cx, cy + 4);
+    // --- Draw the Web (Jaring) ---
+    overlayCtx.strokeStyle = 'rgba(255, 0, 85, 0.6)';
+    overlayCtx.shadowColor = '#ff0055';
+    overlayCtx.shadowBlur = 10;
+    overlayCtx.lineWidth = 1.5;
 
+    const getPt = (handIdx, lmIdx) => {
+      const p = results.multiHandLandmarks[handIdx][lmIdx];
+      return { x: (1 - p.x) * w, y: p.y * h };
+    };
+
+    const fingers = [4, 8, 12, 16, 20];
+
+    if (numHands === 2) {
+      // Connect fingertips of hand 1 to hand 2
+      fingers.forEach(f => {
+        const p1 = getPt(0, f);
+        const p2 = getPt(1, f);
+        
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(p1.x, p1.y);
+        overlayCtx.lineTo(p2.x, p2.y);
+        overlayCtx.stroke();
+        
+        // Add some zig-zag/web lines
+        const midX = (p1.x + p2.x) / 2 + (Math.random() * 20 - 10);
+        const midY = (p1.y + p2.y) / 2 + (Math.random() * 20 - 10);
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(p1.x, p1.y);
+        overlayCtx.lineTo(midX, midY);
+        overlayCtx.lineTo(p2.x, p2.y);
+        overlayCtx.stroke();
+      });
+    } else {
+      // 1 hand web (from palm center)
+      const center = getPt(0, 9);
+      fingers.forEach(f => {
+        const pt = getPt(0, f);
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(center.x, center.y);
+        overlayCtx.lineTo(pt.x, pt.y);
+        overlayCtx.stroke();
+      });
+    }
+  }
+  
   overlayCtx.restore();
 }
 
@@ -290,7 +309,7 @@ const hands = new Hands({
 });
 
 hands.setOptions({
-  maxNumHands: 1, 
+  maxNumHands: 2, // Support 2 hands for pulling the web
   modelComplexity: 1,
   minDetectionConfidence: 0.6,
   minTrackingConfidence: 0.6,
@@ -350,17 +369,28 @@ function onHandResults(results) {
     endActiveStroke();
     palmHoldStart = null;
     smoothedPoint = null;
-    statusEl.textContent = `Mode: ${appMode} (Saved) | No hand`;
+    statusEl.textContent = `Mode: ${appMode} | No hand`;
     return;
   }
 
-  const lm = results.multiHandLandmarks[0];
-  const gesture = getGesture(lm);
-
-  // Draw Portal Web if active
+  // --- DRAW DIMENSIONAL PORTAL ---
   if (isPortalActive) {
-    drawWebPortal(lm, w, h);
+    drawDimensionalPortal(results, w, h);
+    statusEl.textContent = "🚪 PORTAL ACTIVE (Tarikan 2 Tangan)";
+    return; // Skip drawing/gesture logic when portal is active to prevent chaos
   }
+
+  // --- SINGLE HAND LOGIC (DRAW/ERASE) ---
+  let primaryHand = results.multiHandLandmarks[0];
+  if (results.multiHandLandmarks.length === 2) {
+     // Prioritize pointing hand for drawing
+     if (getGesture(results.multiHandLandmarks[1]) === 'POINTING') {
+         primaryHand = results.multiHandLandmarks[1];
+     }
+  }
+
+  const lm = primaryHand;
+  const gesture = getGesture(lm);
 
   const palmX = (1 - lm[9].x) * w;
   const palmY = lm[9].y * h;
@@ -374,7 +404,7 @@ function onHandResults(results) {
     smoothedPoint.y = smoothedPoint.y * (1 - SMOOTHING) + indexY * SMOOTHING;
   }
 
-  if (gesture === 'OPEN_PALM') {
+  if (gesture === 'OPEN_PALM' && isGestureActive) {
     endActiveStroke();
     
     if (palmHoldStart === null) palmHoldStart = now;
@@ -389,6 +419,7 @@ function onHandResults(results) {
       if (appMode === 'IDLE') appMode = 'DRAW';
       else if (appMode === 'DRAW') appMode = 'ERASE';
       else appMode = 'IDLE';
+      manualModeBtn.textContent = `Mode: ${appMode}`;
       palmHoldStart = null;
     }
   } else {
@@ -430,9 +461,26 @@ function onHandResults(results) {
 // ===== UI =====
 portalBtn.addEventListener("click", () => {
   isPortalActive = !isPortalActive;
+  portalBtn.textContent = isPortalActive ? "Portal: ON" : "Portal: OFF";
   portalBtn.style.background = isPortalActive ? "#ff0055" : "#1a1a1a";
   portalBtn.style.borderColor = isPortalActive ? "#ff0055" : "#333";
   portalBtn.style.color = isPortalActive ? "#fff" : "#e5e5e5";
+  
+  // Auto pause drawing mode when portal is active
+  if (isPortalActive) endActiveStroke();
+});
+
+gestureBtn.addEventListener("click", () => {
+  isGestureActive = !isGestureActive;
+  gestureBtn.textContent = isGestureActive ? "✋ Mode: ON" : "✋ Mode: OFF";
+  gestureBtn.style.background = isGestureActive ? "#1a1a1a" : "#ff5050";
+});
+
+manualModeBtn.addEventListener("click", () => {
+  if (appMode === 'IDLE') appMode = 'DRAW';
+  else if (appMode === 'DRAW') appMode = 'ERASE';
+  else appMode = 'IDLE';
+  manualModeBtn.textContent = `Mode: ${appMode}`;
 });
 
 clearBtn.addEventListener("click", () => {
@@ -445,7 +493,7 @@ clearBtn.addEventListener("click", () => {
 
 saveBtn.addEventListener("click", () => {
   const link = document.createElement("a");
-  link.download = `neon-air-canvas-${Date.now()}.png`;
+  link.download = `portal-canvas-${Date.now()}.png`;
   link.href = drawCanvas.toDataURL("image/png");
   link.click();
   statusEl.textContent = "Image saved!";
