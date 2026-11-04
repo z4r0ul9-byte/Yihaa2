@@ -1,5 +1,5 @@
 /**
- * Air Canvas — Hand Gesture Mode (No Pinch)
+ * Air Canvas — Hand Gesture Mode with Neon Glow
  * 
  * Gesture logic:
  * ✋ OPEN_PALM: Hold for 1s to toggle mode (IDLE -> DRAW -> ERASE -> IDLE).
@@ -93,9 +93,12 @@ function drawSegment(from, to, stroke) {
   if (stroke.mode === 'erase') {
     drawCtx.globalCompositeOperation = 'destination-out';
     drawCtx.strokeStyle = 'rgba(0,0,0,1)';
+    drawCtx.shadowBlur = 0; // Eraser doesn't glow
   } else {
     drawCtx.globalCompositeOperation = 'source-over';
     drawCtx.strokeStyle = stroke.color;
+    drawCtx.shadowColor = stroke.color;
+    drawCtx.shadowBlur = Math.max(15, stroke.size * 3); // Neon glow effect
   }
   drawCtx.lineWidth = stroke.size;
   drawCtx.lineCap = 'round';
@@ -118,9 +121,12 @@ function redrawStrokes() {
     if (stroke.mode === 'erase') {
       drawCtx.globalCompositeOperation = 'destination-out';
       drawCtx.strokeStyle = 'rgba(0,0,0,1)';
+      drawCtx.shadowBlur = 0;
     } else {
       drawCtx.globalCompositeOperation = 'source-over';
       drawCtx.strokeStyle = stroke.color;
+      drawCtx.shadowColor = stroke.color;
+      drawCtx.shadowBlur = Math.max(15, stroke.size * 3); // Neon glow effect
     }
     drawCtx.lineWidth = stroke.size;
     drawCtx.lineCap = 'round';
@@ -146,8 +152,8 @@ function drawProgressRing(x, y, progress, currentMode) {
   overlayCtx.lineWidth = RING_LINE_WIDTH;
   overlayCtx.stroke();
 
-  let nextColor = "#4d6bfe"; 
-  if (currentMode === 'DRAW') nextColor = "#ff5050"; // Next is ERASE
+  let nextColor = "#00ffff"; 
+  if (currentMode === 'DRAW') nextColor = "#ff0055"; // Next is ERASE
   else if (currentMode === 'ERASE') nextColor = "#e5e5e5"; // Next is IDLE
 
   if (progress > 0) {
@@ -162,12 +168,16 @@ function drawProgressRing(x, y, progress, currentMode) {
     overlayCtx.strokeStyle = nextColor;
     overlayCtx.lineWidth = RING_LINE_WIDTH;
     overlayCtx.lineCap = "round";
+    overlayCtx.shadowColor = nextColor;
+    overlayCtx.shadowBlur = 15;
     overlayCtx.stroke();
   }
 
   overlayCtx.beginPath();
   overlayCtx.arc(x, y, 4, 0, Math.PI * 2);
   overlayCtx.fillStyle = nextColor;
+  overlayCtx.shadowColor = nextColor;
+  overlayCtx.shadowBlur = 10;
   overlayCtx.fill();
 
   overlayCtx.restore();
@@ -177,7 +187,9 @@ function drawCursor(x, y) {
   overlayCtx.save();
   overlayCtx.beginPath();
   overlayCtx.arc(x, y, 6, 0, Math.PI * 2);
-  overlayCtx.fillStyle = "rgba(255,255,255,0.5)";
+  overlayCtx.fillStyle = "rgba(0, 255, 255, 0.7)";
+  overlayCtx.shadowColor = "#00ffff";
+  overlayCtx.shadowBlur = 15;
   overlayCtx.fill();
   overlayCtx.restore();
 }
@@ -300,7 +312,7 @@ function onHandResults(results) {
         }
         currentStroke.points.push({ x: smoothedPoint.x, y: smoothedPoint.y });
         prevPoint = { x: smoothedPoint.x, y: smoothedPoint.y };
-        statusEl.textContent = `✏️ DRAW MODE`;
+        statusEl.textContent = `✏️ DRAW MODE (Neon)`;
       } else if (appMode === 'ERASE') {
         if (prevPoint) {
           drawSegment(prevPoint, smoothedPoint, currentStroke);
@@ -336,7 +348,7 @@ clearBtn.addEventListener("click", () => {
 saveBtn.addEventListener("click", () => {
   // Save transparent PNG
   const link = document.createElement("a");
-  link.download = `air-canvas-${Date.now()}.png`;
+  link.download = `neon-air-canvas-${Date.now()}.png`;
   link.href = drawCanvas.toDataURL("image/png");
   link.click();
   statusEl.textContent = "Image saved!";
